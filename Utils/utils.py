@@ -8,6 +8,11 @@ import os
 import re
 from dotenv import load_dotenv
 
+try:
+    import streamlit as st
+except Exception:  # pragma: no cover - streamlit is optional for non-UI tooling
+    st = None
+
 # Load .env from project root once at import time
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
@@ -70,6 +75,25 @@ def _find_unresolved_placeholders(value, path="config"):
         unresolved.append(path)
     return unresolved
 
+
+def _load_streamlit_secrets_config() -> dict | None:
+    """Load config JSON from Streamlit Community Cloud secrets when config.json is absent."""
+    if st is None:
+        return None
+    try:
+        for key, value in st.secrets.items():
+            if isinstance(value, str):
+                os.environ.setdefault(key, value)
+        config_json = st.secrets.get("CONFIG_JSON")
+    except Exception:
+        return None
+    if not config_json:
+        return None
+    if isinstance(config_json, dict):
+        return dict(config_json)
+    return json.loads(str(config_json))
+
+
 def config_mtime() -> float:
     """Return config.json modified time for lightweight hot-reload checks."""
     try:
@@ -83,8 +107,13 @@ def load_config():
     load_dotenv(_ENV_PATH, override=True)
     config_path = _CONFIG_PATH
     try:
-        with open(config_path, 'r') as f:
-            config = json.load(f)
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except FileNotFoundError:
+            config = _load_streamlit_secrets_config()
+            if config is None:
+                raise
         config = _expand_env_vars(config)
         unresolved = _find_unresolved_placeholders(config)
         if unresolved:
