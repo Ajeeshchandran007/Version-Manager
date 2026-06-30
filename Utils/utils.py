@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - streamlit is optional for non-UI tooling
 # Load .env from project root once at import time
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
+_DEFAULT_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.default.json")
 _ENV_PATH = os.path.join(_PROJECT_ROOT, ".env")
 load_dotenv(_ENV_PATH)
 
@@ -97,7 +98,19 @@ def _load_streamlit_secrets_config() -> dict | None:
         raw_config = re.sub(r"\s*```$", "", raw_config)
     if "{" in raw_config and "}" in raw_config:
         raw_config = raw_config[raw_config.find("{") : raw_config.rfind("}") + 1]
-    return json.loads(raw_config)
+    try:
+        return json.loads(raw_config)
+    except json.JSONDecodeError:
+        logger.warning("CONFIG_JSON secret is not valid JSON; falling back to config.default.json.")
+        return None
+
+
+def _load_default_config() -> dict | None:
+    try:
+        with open(_DEFAULT_CONFIG_PATH, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
 
 
 def config_mtime() -> float:
@@ -117,7 +130,7 @@ def load_config():
             with open(config_path, 'r') as f:
                 config = json.load(f)
         except FileNotFoundError:
-            config = _load_streamlit_secrets_config()
+            config = _load_streamlit_secrets_config() or _load_default_config()
             if config is None:
                 raise
         config = _expand_env_vars(config)
