@@ -91,7 +91,13 @@ def _load_streamlit_secrets_config() -> dict | None:
         return None
     if isinstance(config_json, dict):
         return dict(config_json)
-    return json.loads(str(config_json))
+    raw_config = str(config_json).strip()
+    if raw_config.startswith("```"):
+        raw_config = re.sub(r"^```(?:json)?\s*", "", raw_config, flags=re.IGNORECASE)
+        raw_config = re.sub(r"\s*```$", "", raw_config)
+    if "{" in raw_config and "}" in raw_config:
+        raw_config = raw_config[raw_config.find("{") : raw_config.rfind("}") + 1]
+    return json.loads(raw_config)
 
 
 def config_mtime() -> float:
