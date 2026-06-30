@@ -1,0 +1,17 @@
+mcp[cli]
+openai
+PyYAML
+python-dotenv
+tavily-python
+langchain-tavily
+langchain-core
+langgraph
+httpx
+paramiko
+pdfminer.six
+pdfplumber
+apscheduler
+pandas
+openpyxl
+streamlit
+altair

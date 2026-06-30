@@ -1,0 +1,3073 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import altair as alt
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+from Core.compatibility_fetcher import CompatibilityRequirementFetcher
+from Core.comparator import compare
+from Core.excel_reporter import generate_excel_report
+from Core.notifier import build_html_report, build_report, count_actionable_updates, get_last_email_error, is_actionable_update, send_email
+from Core.pdf_reader import PDFReader
+from Core.server_querier import ServerQuerier
+from Core.testcase_impact import save_testcase_impact_outputs
+from Core.version_fetcher import VersionFetcher
+from Core.vulnerability_checker import VulnerabilityChecker
+from Core.workspace_assessment import (
+    build_compatibility_assessment,
+    build_package_readiness,
+    build_qa_validation,
+    save_workspace_outputs,
+)
+from Utils.software_loader import load_software, load_software_metadata
+from Utils.utils import load_config, logger
+from agent.memory import get_run_history as read_run_history
+from agent.memory import log_audit
+from agent.multi_agent import LangGraphVersionManager
+from mcp_server import _load_json, _resolve_current_version, _save_json, _vulnerability_path
+
+
+BASE_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = BASE_DIR / "output"
+CACHE_DIR = OUTPUT_DIR / "cache"
+
+CURRENT_FILE = OUTPUT_DIR / "current_versions.json"
+LATEST_FILE = OUTPUT_DIR / "latest_versions.json"
+COMPARISON_FILE = OUTPUT_DIR / "comparison_report.json"
+VULNERABILITY_FILE = OUTPUT_DIR / "vulnerability_report.json"
+PACKAGE_READINESS_FILE = OUTPUT_DIR / "package_readiness.json"
+QA_VALIDATION_FILE = OUTPUT_DIR / "qa_validation.json"
+TESTCASE_IMPACT_FILE = OUTPUT_DIR / "testcase_impact.json"
+TESTCASE_IMPACT_EXCEL_FILE = OUTPUT_DIR / "Test_Case_Impact_Assessment.xlsx"
+QA_EVIDENCE_DIR = OUTPUT_DIR / "qa_evidence"
+CACHE_METRICS_FILE = CACHE_DIR / "cache_metrics.json"
+METRICS_FILE = OUTPUT_DIR / "metrics.jsonl"
+CONFIG_FILE = BASE_DIR / "config.json"
+
+EXCEL_FILE = OUTPUT_DIR / "Software_Version_Assessment.xlsx"
+EMAIL_HTML_FILE = OUTPUT_DIR / "email_preview.html"
+EMAIL_TEXT_FILE = OUTPUT_DIR / "email_preview.txt"
+
+ROLE_ADMIN = "Admin"
+ROLE_RELEASE_ENGINEER = "Release Engineer"
+ROLE_QA_ENGINEER = "QA Engineer"
+ACTION_ROLES = {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}
+ADMIN_ROLES = {ROLE_ADMIN}
+BASE_PAGES = [
+    "Dashboard",
+    "Software Inventory",
+    "Latest Versions",
+    "Version Comparison",
+    "Compatibility Check",
+    "Workflow Monitor",
+    "Reports",
+]
+SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
+RELEASE_PAGES = ["Package Readiness"]
+QA_PAGES = ["QA Validation"]
+ADMIN_PAGES = ["Audit Logs", "Settings"]
+
+RISK_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"]
+PRIMARY_CACHE_NAMESPACES = {"software_versions", "vulnerabilities", "nvd"}
+CACHE_NAMESPACE_LABELS = {
+    "software_versions": "Software Versions",
+    "vulnerabilities": "Vulnerability Assessments",
+    "nvd": "NVD CVE Lookup",
+    "tavily": "Tavily Search",
+    "openai_analysis": "OpenAI Analysis",
+    "vendor_sources": "Vendor Sources",
+}
+RISK_COLORS = {
+    "CRITICAL": "#ef4444",
+    "HIGH": "#f97316",
+    "MEDIUM": "#f59e0b",
+    "LOW": "#22c55e",
+    "NONE": "#38bdf8",
+    "UNKNOWN": "#94a3b8",
+}
+
+
+st.set_page_config(
+    page_title="Version Manager",
+    page_icon="VM",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+def inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            --vm-bg: #070d14;
+            --vm-sidebar: #0a111d;
+            --vm-panel: #111a28;
+            --vm-panel-2: #0f1724;
+            --vm-panel-3: #162235;
+            --vm-border: #26364c;
+            --vm-border-soft: #1c2a3d;
+            --vm-text: #f3f7fb;
+            --vm-muted: #a7b7ca;
+            --vm-blue: #60a5fa;
+            --vm-cyan: #38bdf8;
+            --vm-green: #22c55e;
+            --vm-yellow: #f59e0b;
+            --vm-orange: #fb923c;
+            --vm-red: #ef4444;
+            --vm-shadow: 0 16px 36px rgba(0,0,0,0.24);
+        }
+        .stApp {
+            background: var(--vm-bg);
+            color: var(--vm-text);
+        }
+        .block-container {
+            padding-top: 1.2rem;
+            padding-bottom: 2rem;
+            max-width: 1420px;
+        }
+        section[data-testid="stSidebar"] {
+            background: var(--vm-sidebar);
+            border-right: 1px solid var(--vm-border);
+        }
+        section[data-testid="stSidebar"] h3 {
+            color: var(--vm-text) !important;
+            font-size: 1.08rem;
+            margin-bottom: 0.25rem;
+        }
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] label {
+            color: var(--vm-muted) !important;
+        }
+        section[data-testid="stSidebar"] .stRadio label {
+            color: var(--vm-text) !important;
+            font-weight: 650;
+        }
+        div[data-testid="stCheckbox"] label,
+        div[data-testid="stCheckbox"] p,
+        div[data-testid="stCheckbox"] span,
+        div[data-testid="stToggle"] label,
+        div[data-testid="stToggle"] p,
+        div[data-testid="stToggle"] span {
+            color: var(--vm-text) !important;
+            opacity: 1 !important;
+            font-weight: 750;
+        }
+        div[data-testid="stCheckbox"] svg,
+        div[data-testid="stToggle"] svg {
+            color: #6b7280 !important;
+            opacity: 1 !important;
+        }
+        div[data-testid="stNumberInput"] label,
+        div[data-testid="stNumberInput"] p,
+        div[data-testid="stNumberInput"] span {
+            color: var(--vm-text) !important;
+            opacity: 1 !important;
+            font-weight: 750;
+        }
+        div[data-testid="stNumberInput"] input {
+            color: #111827 !important;
+            background: #ffffff !important;
+            font-weight: 650;
+        }
+        div[data-testid="stNumberInput"] button {
+            color: #111827 !important;
+            background: #ffffff !important;
+        }
+        div[data-testid="stSelectbox"] label,
+        div[data-testid="stSelectbox"] p,
+        div[data-testid="stSelectbox"] span,
+        div[data-testid="stTextInput"] label,
+        div[data-testid="stTextInput"] p,
+        div[data-testid="stTextInput"] span,
+        label[data-testid="stWidgetLabel"],
+        label[data-testid="stWidgetLabel"] p,
+        label[data-testid="stWidgetLabel"] span {
+            color: var(--vm-text) !important;
+            opacity: 1 !important;
+            font-weight: 750;
+        }
+        div[data-testid="stSelectbox"] div,
+        div[data-testid="stTextInput"] input {
+            color: #111827;
+        }
+        div[data-testid="stSidebarUserContent"] {
+            padding-top: 0.55rem;
+        }
+        h1, h2, h3 {
+            letter-spacing: 0;
+        }
+        .stButton button, .stDownloadButton button {
+            border-radius: 8px;
+            border: 1px solid var(--vm-border);
+            background: var(--vm-panel);
+            color: var(--vm-text);
+            font-weight: 650;
+            box-shadow: var(--vm-shadow);
+        }
+        .stButton button:hover, .stDownloadButton button:hover {
+            border-color: #3b82f6;
+            color: #ffffff;
+            background: #16243a;
+        }
+        div[data-testid="stMetric"] {
+            background: linear-gradient(135deg, var(--vm-panel) 0%, var(--vm-panel-2) 100%);
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+            padding: 13px 15px;
+            min-height: 92px;
+            box-shadow: var(--vm-shadow);
+        }
+        div[data-testid="stMetric"] label {
+            color: var(--vm-muted) !important;
+            font-size: 0.78rem;
+            font-weight: 800;
+            opacity: 1 !important;
+        }
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+            color: var(--vm-text);
+            font-size: 1.55rem;
+        }
+        div[data-testid="stMetricDelta"] {
+            font-size: 0.75rem;
+        }
+        .vm-shell-header {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 12px;
+            align-items: center;
+            border: 1px solid var(--vm-border);
+            background: linear-gradient(135deg, var(--vm-panel) 0%, var(--vm-panel-2) 100%);
+            border-radius: 8px;
+            padding: 16px 18px;
+            margin-bottom: 18px;
+            box-shadow: var(--vm-shadow);
+        }
+        .vm-shell-header h1 {
+            margin: 0;
+            font-size: 1.22rem;
+            color: var(--vm-text);
+        }
+        .vm-shell-header p {
+            margin: 3px 0 0 0;
+            color: var(--vm-muted);
+            font-size: 0.78rem;
+        }
+        .vm-header-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+        }
+        .vm-chip {
+            border: 1px solid var(--vm-border);
+            background: #162235;
+            color: var(--vm-text);
+            border-radius: 999px;
+            padding: 4px 8px;
+            font-size: 0.7rem;
+            font-weight: 650;
+            white-space: nowrap;
+        }
+        .vm-title {
+            border-bottom: 1px solid var(--vm-border);
+            padding-bottom: 10px;
+            margin: 8px 0 16px 0;
+        }
+        .vm-title h1 {
+            font-size: 1.7rem;
+            margin: 0;
+            letter-spacing: 0;
+        }
+        .vm-title p {
+            color: var(--vm-muted);
+            margin: 4px 0 0 0;
+        }
+        .vm-card {
+            background: var(--vm-panel);
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: var(--vm-shadow);
+        }
+        .vm-posture {
+            display: grid;
+            grid-template-columns: 1.4fr repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .vm-posture-item {
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+            background: var(--vm-panel);
+            padding: 15px;
+            min-height: 104px;
+            box-shadow: var(--vm-shadow);
+        }
+        .vm-posture-item.primary {
+            background: linear-gradient(135deg, #142034 0%, #172b40 55%, #123044 100%);
+            border-color: #31516d;
+        }
+        .vm-posture-label {
+            color: var(--vm-muted);
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .vm-posture-value {
+            color: var(--vm-text);
+            font-size: 1.55rem;
+            font-weight: 780;
+            margin-top: 8px;
+        }
+        .vm-posture-note {
+            color: var(--vm-muted);
+            font-size: 0.78rem;
+            margin-top: 6px;
+        }
+        .vm-status {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 3px 9px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            border: 1px solid var(--vm-border);
+        }
+        .vm-status.ok { color: #bbf7d0; background: rgba(34,197,94,0.16); border-color: rgba(34,197,94,0.34); }
+        .vm-status.warn { color: #fde68a; background: rgba(245,158,11,0.16); border-color: rgba(245,158,11,0.34); }
+        .vm-status.bad { color: #fecaca; background: rgba(239,68,68,0.16); border-color: rgba(239,68,68,0.34); }
+        .vm-status.info { color: #bae6fd; background: rgba(56,189,248,0.16); border-color: rgba(56,189,248,0.34); }
+        .vm-status.neutral { color: #cbd5e1; background: rgba(148,163,184,0.14); border-color: rgba(148,163,184,0.3); }
+        .vm-grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+        .vm-flow {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(120px, 1fr));
+            gap: 10px;
+            align-items: stretch;
+        }
+        .vm-node {
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+            background: var(--vm-panel);
+            padding: 14px 12px;
+            min-height: 104px;
+            position: relative;
+            box-shadow: var(--vm-shadow);
+        }
+        .vm-node:before {
+            content: "";
+            position: absolute;
+            left: 12px;
+            top: 0;
+            width: 34px;
+            height: 3px;
+            background: var(--vm-cyan);
+            border-radius: 0 0 4px 4px;
+        }
+        .vm-node strong {
+            display: block;
+            color: var(--vm-text);
+            font-size: 0.86rem;
+            margin-bottom: 8px;
+        }
+        .vm-node span {
+            color: var(--vm-muted);
+            font-size: 0.76rem;
+        }
+        .vm-separator {
+            height: 1px;
+            background: var(--vm-border);
+            margin: 18px 0;
+        }
+        .stDataFrame, div[data-testid="stTable"] {
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+        }
+        .vm-table-wrap {
+            border: 1px solid #d8dee8;
+            border-radius: 8px;
+            overflow: auto;
+            background: #ffffff;
+            max-height: 560px;
+        }
+        table.vm-readable-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+            color: #111827;
+            background: #ffffff;
+        }
+        table.vm-readable-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #e8eef6;
+            color: #111827;
+            font-weight: 850;
+            text-align: left;
+            padding: 9px 10px;
+            border-bottom: 1px solid #cbd5e1;
+            white-space: nowrap;
+        }
+        table.vm-readable-table tbody td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #e5eaf0;
+            color: #1f2937;
+            font-weight: 520;
+            vertical-align: top;
+            white-space: nowrap;
+        }
+        table.vm-readable-table tbody tr:nth-child(even) td {
+            background: #fafcff;
+        }
+        table.vm-readable-table tbody tr:hover td {
+            background: #eef6ff;
+        }
+        table.vm-readable-table td.vm-cell-red {
+            background: #fce8e6 !important;
+            color: #8a1c12 !important;
+            font-weight: 800;
+        }
+        table.vm-readable-table td.vm-cell-amber {
+            background: #fff4d6 !important;
+            color: #7a4b00 !important;
+            font-weight: 800;
+        }
+        table.vm-readable-table td.vm-cell-blue {
+            background: #e8f2ff !important;
+            color: #174a7c !important;
+            font-weight: 800;
+        }
+        table.vm-readable-table td.vm-cell-green {
+            background: #e7f6ed !important;
+            color: #135d31 !important;
+            font-weight: 800;
+        }
+        [data-testid="stDataFrame"] div[role="grid"] {
+            border-color: var(--vm-border) !important;
+        }
+        [data-testid="stDataFrame"] [role="columnheader"],
+        [data-testid="stDataFrame"] [role="columnheader"] div,
+        [data-testid="stDataFrame"] [role="columnheader"] span {
+            color: #111827 !important;
+            background: #eef3f8 !important;
+            font-weight: 850 !important;
+            opacity: 1 !important;
+        }
+        [data-testid="stDataFrame"] [role="gridcell"],
+        [data-testid="stDataFrame"] [role="gridcell"] div,
+        [data-testid="stDataFrame"] [role="gridcell"] span {
+            color: #1f2937 !important;
+            opacity: 1 !important;
+        }
+        .vm-sidebar-card {
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+            background: var(--vm-panel);
+            padding: 12px;
+            margin: 10px 0 14px 0;
+            box-shadow: var(--vm-shadow);
+        }
+        .vm-sidebar-kv {
+            color: var(--vm-muted);
+            font-size: 0.78rem;
+            margin-bottom: 8px;
+        }
+        .vm-sidebar-kv strong {
+            display: block;
+            color: var(--vm-text);
+            font-size: 0.82rem;
+            margin-top: 1px;
+        }
+        div[data-testid="stMarkdownContainer"],
+        div[data-testid="stMarkdownContainer"] p,
+        div[data-testid="stMarkdownContainer"] li,
+        div[data-testid="stMarkdownContainer"] span {
+            color: var(--vm-text);
+        }
+        h1, h2, h3, h4 {
+            color: var(--vm-text) !important;
+        }
+        div[data-testid="stAlert"] {
+            border-radius: 8px;
+            border: 1px solid var(--vm-border);
+        }
+        div[data-testid="stExpander"] {
+            border: 1px solid var(--vm-border);
+            border-radius: 8px;
+            background: var(--vm-panel);
+            box-shadow: var(--vm-shadow);
+        }
+        div[data-baseweb="select"] > div,
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stNumberInput"] input {
+            background: #ffffff !important;
+            border-color: #d8dee8 !important;
+            color: #202123 !important;
+            border-radius: 8px !important;
+        }
+        div[data-baseweb="select"] span {
+            color: #202123 !important;
+        }
+        div[data-testid="stTabs"] button {
+            color: var(--vm-muted) !important;
+            border-radius: 999px;
+        }
+        div[data-testid="stTabs"] button[aria-selected="true"] {
+            color: var(--vm-text) !important;
+            background: #162235 !important;
+            font-weight: 750;
+        }
+        section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label {
+            border-radius: 8px;
+            padding: 4px 6px;
+        }
+        section[data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:hover {
+            background: #111a28;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(7,13,20,0.92);
+        }
+        iframe {
+            border: 1px solid var(--vm-border) !important;
+            border-radius: 8px;
+            background: white;
+        }
+        .vm-login-wrap {
+            width: 100%;
+            margin: 8vh 0 0 0;
+            border: 1px solid var(--vm-border);
+            background: linear-gradient(135deg, var(--vm-panel) 0%, var(--vm-panel-2) 100%);
+            border-radius: 12px;
+            padding: 28px;
+            box-shadow: var(--vm-shadow);
+        }
+        .vm-login-brand {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--vm-text);
+            margin-bottom: 6px;
+        }
+        .vm-login-subtitle {
+            color: var(--vm-muted);
+            font-size: 0.88rem;
+            line-height: 1.45;
+            margin-bottom: 20px;
+        }
+        .vm-login-meta {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 0;
+        }
+        div[data-testid="stForm"] {
+            border: 0;
+            padding: 0;
+        }
+        div[data-testid="stForm"] button[kind="primary"],
+        div[data-testid="stFormSubmitButton"] button {
+            background: #2563eb !important;
+            border: 1px solid #60a5fa !important;
+            color: #ffffff !important;
+            font-weight: 800 !important;
+            min-height: 42px;
+            box-shadow: 0 10px 24px rgba(37,99,235,0.28);
+        }
+        div[data-testid="stForm"] button[kind="primary"]:hover,
+        div[data-testid="stFormSubmitButton"] button:hover {
+            background: #1d4ed8 !important;
+            color: #ffffff !important;
+            border-color: #93c5fd !important;
+        }
+        @media (max-width: 1100px) {
+            .vm-flow { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+            .vm-posture { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .vm-shell-header { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 720px) {
+            .vm-posture { grid-template-columns: 1fr; }
+            .vm-grid-2 { grid-template-columns: 1fr; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def file_mtime(path: Path) -> float:
+    return path.stat().st_mtime if path.exists() else 0.0
+
+
+@st.cache_data
+def load_json(path: str, mtime: float = 0.0) -> dict[str, Any]:
+    file_path = Path(path)
+    if not file_path.exists():
+        return {}
+    try:
+        return json.loads(file_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+@st.cache_data
+def load_metrics(path: str, mtime: float = 0.0) -> pd.DataFrame:
+    file_path = Path(path)
+    rows: list[dict[str, Any]] = []
+    if not file_path.exists():
+        return pd.DataFrame()
+    for line in file_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
+def load_file_text(path: str, mtime: float = 0.0) -> str:
+    file_path = Path(path)
+    if not file_path.exists():
+        return ""
+    return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def clear_dashboard_cache() -> None:
+    load_json.clear()
+    load_metrics.clear()
+    load_file_text.clear()
+
+
+def save_qa_manual_update(
+    software_name: str,
+    installation_status: str,
+    test_result: str,
+    notes: str,
+    test_date: Any,
+    tested_by: str,
+    evidence_file: Any | None,
+) -> dict[str, Any]:
+    data = load_json(str(QA_VALIDATION_FILE), file_mtime(QA_VALIDATION_FILE))
+    if software_name not in data:
+        raise ValueError(f"QA record not found for {software_name}")
+
+    evidence_path = ""
+    if evidence_file is not None:
+        QA_EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(ch if ch.isalnum() or ch in {".", "-", "_"} else "_" for ch in evidence_file.name)
+        target = QA_EVIDENCE_DIR / f"{software_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
+        target.write_bytes(evidence_file.getbuffer())
+        evidence_path = str(target)
+
+    record = data[software_name]
+    record["Installation Status"] = installation_status
+    record["Test Result"] = test_result
+    record["Test Notes"] = notes.strip() or record.get("Test Notes", "")
+    record["Test Date"] = str(test_date)
+    record["Tested By"] = tested_by.strip() or current_user().get("username", "unknown")
+    record["Manual QA Updated"] = True
+    record["Last QA Update"] = datetime.now().isoformat(timespec="seconds")
+    if evidence_path:
+        record["Evidence File"] = evidence_path
+
+    checks = record.get("Functional Validation") or {}
+    if test_result == "PASS":
+        record["Functional Validation"] = {key: True for key in checks} if checks else {
+            "Application Launch": True,
+            "Service Running": True,
+            "Registry Verified": True,
+            "Files Installed": True,
+            "Environment Variables": True,
+            "License Activated": True,
+        }
+    elif test_result == "FAIL":
+        record["Functional Validation"] = {key: False for key in checks} if checks else {}
+
+    QA_VALIDATION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    clear_dashboard_cache()
+    return record
+
+
+def run_async(coro: Any) -> Any:
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+
+def runtime_state() -> dict[str, Any]:
+    return {
+        "config": load_config(),
+        "version_fetcher": VersionFetcher(),
+        "pdf_reader": PDFReader(),
+        "server_querier": ServerQuerier(),
+        "vulnerability_checker": VulnerabilityChecker(),
+    }
+
+
+def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
+    config = state["config"]
+
+    def project_path(config_path: str) -> Path:
+        path = Path(config_path)
+        return path if path.is_absolute() else BASE_DIR / path
+
+    async def get_software_list(category: str = "ALL") -> dict[str, Any]:
+        software = load_software(config["input_files"]["software_yml"], category)
+        return {"category": category, "software": software}
+
+    async def query_server(software_name: str) -> dict[str, Any]:
+        result = await state["server_querier"].fetch(software_name)
+        if result:
+            result.setdefault("source", "live server")
+        return result or {"source": "live server", "error": "No version returned"}
+
+    async def extract_from_pdf(software_name: str) -> dict[str, Any]:
+        result = await state["pdf_reader"].fetch(software_name)
+        result.setdefault("source", "PDF fallback")
+        return result
+
+    async def search_latest_version(software_name: str, force_refresh: bool = False) -> dict[str, Any]:
+        return await state["version_fetcher"].fetch(software_name, force_refresh=force_refresh)
+
+    async def compare_versions(latest: dict | None = None, current: dict | None = None) -> dict[str, Any]:
+        latest = latest or {}
+        current = current or {}
+        comparison = compare(latest, current)
+        _save_json(latest, config["output_files"]["latest_version_json"])
+        _save_json(current, config["output_files"]["current_version_json"])
+        _save_json(comparison, config["output_files"]["comparison_report_json"])
+        return comparison
+
+    async def get_run_history(software_name: str, limit: int = 5) -> dict[str, Any]:
+        return {"software_name": software_name, "history": read_run_history(software_name, limit)}
+
+    async def check_vulnerabilities(
+        software_name: str,
+        version: str | None = None,
+        needs_update: bool = False,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
+        return await state["vulnerability_checker"].check(
+            software_name,
+            version,
+            needs_update,
+            force_refresh=force_refresh,
+        )
+
+    async def save_vulnerability_report(vulnerabilities: dict) -> dict[str, Any]:
+        out = _vulnerability_path(config)
+        _save_json(vulnerabilities, out)
+        return {"saved": True, "path": str((BASE_DIR / out).resolve()), "total": len(vulnerabilities)}
+
+    async def assess_package_readiness(
+        comparison: dict | None = None,
+        latest: dict | None = None,
+        vulnerabilities: dict | None = None,
+    ) -> dict[str, Any]:
+        readiness = build_package_readiness(comparison or {}, latest or {}, vulnerabilities or {})
+        out = config["output_files"].get("package_readiness_json", "output/package_readiness.json")
+        _save_json(readiness, out)
+        return {
+            "saved": True,
+            "path": str((BASE_DIR / out).resolve()),
+            "total": len(readiness),
+            "package_readiness": readiness,
+        }
+
+    async def save_package_readiness(package_readiness: dict) -> dict[str, Any]:
+        out = config["output_files"].get("package_readiness_json", "output/package_readiness.json")
+        _save_json(package_readiness, out)
+        return {"saved": True, "path": str((BASE_DIR / out).resolve()), "total": len(package_readiness)}
+
+    async def check_compatibility(
+        comparison: dict | None = None,
+        package_readiness: dict | None = None,
+    ) -> dict[str, Any]:
+        metadata = load_software_metadata(config["input_files"]["software_yml"], config.get("default_category", "ALL"))
+        comparison = comparison or {}
+        latest = _load_json(config["output_files"].get("latest_version_json", "output/latest_versions.json"))
+        vendor_requirements = await resolve_vendor_compatibility_requirements(comparison, latest)
+        compatibility = build_compatibility_assessment(comparison, package_readiness or {}, metadata, vendor_requirements)
+        return {"saved": True, "total": len(compatibility), "compatibility": compatibility}
+
+    async def generate_qa_validation(
+        comparison: dict | None = None,
+        package_readiness: dict | None = None,
+    ) -> dict[str, Any]:
+        metadata = load_software_metadata(config["input_files"]["software_yml"], config.get("default_category", "ALL"))
+        comparison = comparison or {}
+        latest = _load_json(config["output_files"].get("latest_version_json", "output/latest_versions.json"))
+        vendor_requirements = await resolve_vendor_compatibility_requirements(comparison, latest)
+        qa_validation = build_qa_validation(comparison, package_readiness or {}, metadata, vendor_requirements)
+        out = config["output_files"].get("qa_validation_json", "output/qa_validation.json")
+        _save_json(qa_validation, out)
+        return {
+            "saved": True,
+            "path": str((BASE_DIR / out).resolve()),
+            "total": len(qa_validation),
+            "qa_validation": qa_validation,
+        }
+
+    async def save_qa_validation(qa_validation: dict) -> dict[str, Any]:
+        out = config["output_files"].get("qa_validation_json", "output/qa_validation.json")
+        _save_json(qa_validation, out)
+        return {"saved": True, "path": str((BASE_DIR / out).resolve()), "total": len(qa_validation)}
+
+    async def generate_testcase_impact(comparison: dict | None = None) -> dict[str, Any]:
+        comparison = comparison or _load_json(config["output_files"]["comparison_report_json"])
+        impact = save_testcase_impact_outputs(
+            comparison,
+            str(project_path(config["input_files"].get("testcase_repository_xlsx", "Input/testcaseRepository.xlsx"))),
+            str(project_path(config["output_files"].get("testcase_impact_json", "output/testcase_impact.json"))),
+            str(project_path(config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx"))),
+        )
+        return {
+            "saved": True,
+            "path": str(project_path(config["output_files"].get("testcase_impact_json", "output/testcase_impact.json"))),
+            "excel_path": str(project_path(config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx"))),
+            "summary": impact.get("summary", {}),
+            "testcase_impact": impact,
+        }
+
+    async def generate_excel_assessment() -> dict[str, Any]:
+        comparison = _load_json(config["output_files"]["comparison_report_json"])
+        vulnerability_path = _vulnerability_path(config)
+        vulnerabilities = _load_json(vulnerability_path) if Path(BASE_DIR / vulnerability_path).exists() else {}
+        excel_path = BASE_DIR / config["output_files"].get("excel_assessment", "output/Software_Version_Assessment.xlsx")
+        generate_excel_report(comparison, vulnerabilities, str(excel_path))
+        return {"saved": True, "path": str(excel_path)}
+
+    async def send_notification(report: dict | None = None) -> dict[str, Any]:
+        comparison = _load_json(config["output_files"]["comparison_report_json"])
+        vulnerability_path = _vulnerability_path(config)
+        vulnerabilities = _load_json(vulnerability_path) if Path(BASE_DIR / vulnerability_path).exists() else {}
+        body, html_body = prepare_email_report_files(comparison, vulnerabilities)
+        actionable_updates = count_actionable_updates(comparison, vulnerabilities)
+        unknown = [name for name, result in comparison.items() if result.get("unknown")]
+        subject = (
+            f"{actionable_updates} software update(s) needed"
+            if actionable_updates else (
+                f"{len(unknown)} software version status unknown"
+                if unknown else "All software versions are up to date"
+            )
+        )
+        sent = send_email(subject, body, html_body=html_body)
+        return {"sent": sent, "subject": subject, "error": get_last_email_error()}
+
+    async def log_audit_event(step: str, details: dict | None = None) -> dict[str, Any]:
+        run_id = (details or {}).get("run_id", "streamlit")
+        log_audit(run_id, step, "streamlit", details or {})
+        return {"logged": True, "run_id": run_id, "step": step}
+
+    return {
+        "get_software_list": get_software_list,
+        "query_server": query_server,
+        "extract_from_pdf": extract_from_pdf,
+        "search_latest_version": search_latest_version,
+        "compare_versions": compare_versions,
+        "get_run_history": get_run_history,
+        "check_vulnerabilities": check_vulnerabilities,
+        "save_vulnerability_report": save_vulnerability_report,
+        "assess_package_readiness": assess_package_readiness,
+        "save_package_readiness": save_package_readiness,
+        "check_compatibility": check_compatibility,
+        "generate_qa_validation": generate_qa_validation,
+        "save_qa_validation": save_qa_validation,
+        "generate_testcase_impact": generate_testcase_impact,
+        "generate_excel_assessment": generate_excel_assessment,
+        "send_notification": send_notification,
+        "log_audit_event": log_audit_event,
+    }
+
+
+async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str, Any]:
+    state = runtime_state()
+    workflow = LangGraphVersionManager(build_streamlit_agent_tools(state))
+    final_state = await workflow.run(
+        "Run the full software version, security, package readiness, compatibility, QA validation, and reporting workflow.",
+        category=category,
+        force_refresh=force_refresh,
+    )
+    comparison = final_state.get("comparison_results", {})
+    vulnerabilities = final_state.get("vulnerability_results", {})
+    report_package = final_state.get("report_package", {})
+    notification = report_package.get("notification", {})
+    excel = report_package.get("excel", {})
+    updates = [name for name, result in comparison.items() if is_actionable_update(result)]
+    return {
+        "operation": "full_pipeline",
+        "workflow": "LangGraph Supervisor",
+        "workflow_status": final_state.get("workflow_status"),
+        "agent_messages": final_state.get("messages", []),
+        "cache_mode": "fresh" if force_refresh else "use_cache",
+        "total": len(comparison),
+        "needs_update": updates,
+        "unknown": [name for name, result in comparison.items() if result.get("unknown")],
+        "vulnerability_report": str(VULNERABILITY_FILE),
+        "package_readiness_report": str(PACKAGE_READINESS_FILE),
+        "qa_validation_report": str(QA_VALIDATION_FILE),
+        "testcase_impact_report": str(TESTCASE_IMPACT_FILE),
+        "testcase_impact_excel": str(TESTCASE_IMPACT_EXCEL_FILE),
+        "excel_assessment": excel.get("path", str(EXCEL_FILE)),
+        "vulnerabilities": vulnerabilities,
+        "package_readiness": final_state.get("package_readiness_results", {}),
+        "compatibility": final_state.get("compatibility_results", {}),
+        "qa_validation": final_state.get("qa_validation_results", {}),
+        "testcase_impact": final_state.get("testcase_impact_results", {}),
+        "email_sent": bool(notification.get("sent")),
+        "email_error": notification.get("error"),
+    }
+
+
+async def trigger_fetch_latest_versions(category: str, force_refresh: bool) -> dict[str, Any]:
+    state = runtime_state()
+    config = state["config"]
+    software_list = load_software(config["input_files"]["software_yml"], category)
+    latest = {}
+    for name in software_list:
+        latest[name] = await state["version_fetcher"].fetch(name, force_refresh=force_refresh)
+    out = config["output_files"]["latest_version_json"]
+    _save_json(latest, out)
+    return {
+        "operation": "fetch_latest_versions",
+        "saved": True,
+        "total": len(latest),
+        "cache_mode": "fresh" if force_refresh else "use_cache",
+        "path": str((BASE_DIR / out).resolve()),
+    }
+
+
+async def trigger_fetch_current_versions(category: str) -> dict[str, Any]:
+    state = runtime_state()
+    config = state["config"]
+    software_list = load_software(config["input_files"]["software_yml"], category)
+    current = {}
+    scanned_at = datetime.now().astimezone().isoformat()
+    for name in software_list:
+        record = await _resolve_current_version(state["server_querier"], state["pdf_reader"], name)
+        if isinstance(record, dict):
+            record["last_scanned"] = scanned_at
+        current[name] = record
+    out = config["output_files"]["current_version_json"]
+    _save_json(current, out)
+    from_server = len([item for item in current.values() if item.get("source") == "live server"])
+    return {
+        "operation": "fetch_current_versions",
+        "saved": True,
+        "total": len(current),
+        "from_server": from_server,
+        "from_document": len(current) - from_server,
+        "path": str((BASE_DIR / out).resolve()),
+    }
+
+
+def trigger_compare_versions() -> dict[str, Any]:
+    config = load_config()
+    latest = _load_json(config["output_files"]["latest_version_json"])
+    current = _load_json(config["output_files"]["current_version_json"])
+    comparison = compare(latest, current)
+    out = config["output_files"]["comparison_report_json"]
+    _save_json(comparison, out)
+    return {
+        "operation": "compare_versions",
+        "saved": True,
+        "total": len(comparison),
+        "needs_update": len([item for item in comparison.values() if item.get("needs_update")]),
+        "path": str((BASE_DIR / out).resolve()),
+    }
+
+
+def trigger_send_report_email() -> dict[str, Any]:
+    config = load_config()
+    comparison = _load_json(config["output_files"]["comparison_report_json"])
+    vulnerability_path = _vulnerability_path(config)
+    vulnerabilities = _load_json(vulnerability_path) if Path(BASE_DIR / vulnerability_path).exists() else {}
+    body, html_body = prepare_email_report_files(comparison, vulnerabilities)
+    needs_update = [name for name, result in comparison.items() if result.get("needs_update")]
+    actionable_updates = count_actionable_updates(comparison, vulnerabilities)
+    unknown = [name for name, result in comparison.items() if result.get("unknown")]
+    subject = (
+        f"{actionable_updates} software update(s) needed"
+        if actionable_updates else (
+            f"{len(unknown)} software version status unknown"
+            if unknown else "All software versions are up to date"
+        )
+    )
+    sent = send_email(subject, body, html_body=html_body)
+    return {
+        "operation": "send_report_email",
+        "sent": sent,
+        "subject": subject,
+        "recipients": len(config.get("smtp", {}).get("recipients", [])),
+        "error": get_last_email_error(),
+    }
+
+
+@st.cache_resource
+def app_scheduler() -> BackgroundScheduler:
+    scheduler = BackgroundScheduler(timezone=datetime.now().astimezone().tzinfo)
+    scheduler.start()
+    return scheduler
+
+
+def scheduled_background_scan(category: str = "ALL") -> None:
+    try:
+        asyncio.run(trigger_full_pipeline(category, force_refresh=False))
+    except Exception as exc:
+        print(f"Scheduled background scan failed: {exc}")
+
+
+def validate_cron_expression(schedule: str) -> tuple[bool, str]:
+    try:
+        CronTrigger.from_crontab(schedule)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def save_schedule_config(schedule: str) -> dict[str, Any]:
+    if not CONFIG_FILE.exists():
+        raise FileNotFoundError(f"Config file not found: {CONFIG_FILE}")
+    config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    config["schedule_cron"] = schedule
+    CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    clear_dashboard_cache()
+    return config
+
+
+def apply_background_schedule(schedule: str, category: str) -> str:
+    scheduler = app_scheduler()
+    trigger = CronTrigger.from_crontab(schedule)
+    scheduler.add_job(
+        scheduled_background_scan,
+        trigger,
+        args=[category],
+        id="streamlit_version_pipeline",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    job = scheduler.get_job("streamlit_version_pipeline")
+    if job and job.next_run_time:
+        return job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+    return "Scheduled"
+
+
+def sync_background_schedule_from_config(config: dict[str, Any]) -> None:
+    """Keep the Streamlit background scheduler aligned with config.json edits."""
+    schedule = config.get("schedule_cron", "")
+    category = config.get("default_category", "ALL")
+    signature = f"{schedule}|{category}|{file_mtime(CONFIG_FILE)}"
+    if st.session_state.get("active_schedule_signature") == signature:
+        return
+
+    scheduler = app_scheduler()
+    if not schedule:
+        job = scheduler.get_job("streamlit_version_pipeline")
+        if job:
+            scheduler.remove_job("streamlit_version_pipeline")
+        st.session_state["active_schedule_signature"] = signature
+        st.session_state["active_schedule_description"] = "Not configured"
+        return
+
+    try:
+        next_run = apply_background_schedule(schedule, category)
+        st.session_state["active_schedule_signature"] = signature
+        st.session_state["active_schedule_description"] = next_run
+    except Exception as exc:
+        st.session_state["active_schedule_error"] = str(exc)
+
+
+def value(record: dict[str, Any], *keys: str, default: Any = "") -> Any:
+    for key in keys:
+        if key in record and record[key] not in (None, ""):
+            return record[key]
+    return default
+
+
+def parse_ts(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def format_ts(raw: str | None) -> str:
+    parsed = parse_ts(raw)
+    if not parsed:
+        return "Not available"
+    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_epoch_ts(raw: float) -> str:
+    if not raw:
+        return "Not available"
+    return datetime.fromtimestamp(raw).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def inventory_status(record: dict[str, Any]) -> str:
+    build_version = str(value(record, "Build Version", "version", default="")).strip()
+    source = str(value(record, "source", default="")).lower()
+    if not build_version or build_version.lower() in {"unknown", "none", "null"}:
+        return "Unknown"
+    if "unreachable" in source:
+        return "Discovered via Document"
+    return "Discovered"
+
+
+def vendor_for(name: str) -> str:
+    lookup = {
+        "sql": "Microsoft",
+        "exchange": "Microsoft",
+        "outlook": "Microsoft",
+        "edge": "Microsoft",
+        "openssl": "OpenSSL",
+        "libcurl": "curl",
+        "hcl": "HCL",
+        "elastic": "Elastic",
+    }
+    lowered = name.lower()
+    for key, vendor in lookup.items():
+        if key in lowered:
+            return vendor
+    return "Unknown"
+
+
+def version_gap(current_version: str, latest_version: str, current_cu: str = "", latest_cu: str = "") -> str:
+    current_version = str(current_version or "").strip()
+    latest_version = str(latest_version or "").strip()
+    current_cu = str(current_cu or "").strip()
+    latest_cu = str(latest_cu or "").strip()
+    if not current_version or not latest_version:
+        return "Unknown"
+    if current_version.lower() == latest_version.lower() and current_cu.lower() == latest_cu.lower():
+        return "None"
+    if current_cu and latest_cu and current_cu != latest_cu:
+        return "CU Gap"
+    current_major = current_version.split(".")[0]
+    latest_major = latest_version.split(".")[0]
+    if current_major and latest_major and current_major != latest_major:
+        return "Major Gap"
+    return "Minor Gap"
+
+
+def update_priority(gap: str, risk: str) -> str:
+    risk = risk.upper()
+    if risk in {"CRITICAL", "HIGH"}:
+        return risk.title()
+    if gap in {"Major Gap", "CU Gap"}:
+        return "Medium"
+    if gap == "Minor Gap":
+        return "Low"
+    return "None"
+
+
+def ensure_workspace_outputs(
+    comparison: dict[str, Any],
+    latest: dict[str, Any],
+    vulnerabilities: dict[str, Any],
+    vendor_requirements: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    config = load_config()
+    readiness, qa_validation = save_workspace_outputs(
+        comparison,
+        latest,
+        vulnerabilities,
+        str(PACKAGE_READINESS_FILE),
+        str(QA_VALIDATION_FILE),
+        load_software_metadata(config["input_files"]["software_yml"], "ALL"),
+        vendor_requirements,
+    )
+    if comparison:
+        save_testcase_impact_outputs(
+            comparison,
+            str((BASE_DIR / config["input_files"].get("testcase_repository_xlsx", "Input/testcaseRepository.xlsx")).resolve()),
+            str(TESTCASE_IMPACT_FILE),
+            str(TESTCASE_IMPACT_EXCEL_FILE),
+        )
+    return readiness, qa_validation
+
+
+async def resolve_vendor_compatibility_requirements(
+    comparison: dict[str, Any],
+    latest: dict[str, Any],
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    fetcher = CompatibilityRequirementFetcher()
+    requirements: dict[str, dict[str, Any]] = {}
+    for name, record in comparison.items():
+        target = record.get("latest", {}) if isinstance(record, dict) else {}
+        latest_version = value(target, "Build Version", "version")
+        latest_record = latest.get(name, {}) if isinstance(latest, dict) else {}
+        metadata = latest_record.get("cache_metadata", {}) if isinstance(latest_record, dict) else {}
+        source_url = value(latest_record, "Release Notes", "source_url", default="")
+        if not source_url:
+            source_url = value(metadata, "source", default="")
+        extracted = await fetcher.fetch(name, str(latest_version or ""), str(source_url or ""), force_refresh=force_refresh)
+        if extracted:
+            requirements[name] = extracted
+    return requirements
+
+
+def load_vendor_compatibility_requirements(
+    comparison: dict[str, Any],
+    latest: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    try:
+        return run_async(resolve_vendor_compatibility_requirements(comparison, latest, force_refresh=False))
+    except Exception as exc:
+        logger.warning("Vendor compatibility extraction unavailable: %s", exc)
+        return {}
+
+
+def normalize_current(data: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    fallback_scan_time = format_epoch_ts(file_mtime(CURRENT_FILE))
+    for name, record in data.items():
+        rows.append(
+            {
+                "Software Name": name,
+                "Vendor": vendor_for(name),
+                "Current Version": value(record, "Build Version", "version"),
+                "Current CU": value(record, "Cumulative Update (CU)", "cu", default=""),
+                "Server Name": "Configured Server" if value(record, "source") == "live server" else "PDF Inventory",
+                "Environment": "Production",
+                "Last Scanned": format_ts(value(record, "last_scanned", default="")) if value(record, "last_scanned", default="") else fallback_scan_time,
+                "Source": value(record, "source", default="Unknown"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def normalize_latest(data: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for name, record in data.items():
+        metadata = record.get("cache_metadata", {})
+        rows.append(
+            {
+                "Software Name": name,
+                "Vendor": vendor_for(name),
+                "Latest Version": value(record, "Build Version", "version"),
+                "Latest CU": value(record, "Cumulative Update (CU)", "cu", default=""),
+                "Last Checked": format_ts(metadata.get("last_updated")),
+                "Source": metadata.get("source", value(record, "source", default="vendor_sources")),
+                "Cache Status": str(metadata.get("status", "unknown")).title(),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def normalize_comparison(data: dict[str, Any], vulnerabilities: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for name, record in data.items():
+        current = record.get("current", {})
+        latest = record.get("latest", {})
+        current_version = value(current, "Build Version", "version")
+        latest_version = value(latest, "Build Version", "version")
+        current_cu = value(current, "Cumulative Update (CU)", "cu", default="")
+        latest_cu = value(latest, "Cumulative Update (CU)", "cu", default="")
+        gap = version_gap(str(current_version), str(latest_version), str(current_cu), str(latest_cu))
+        needs_update = is_actionable_update(record)
+        risk = value(vulnerabilities.get(name, {}), "risk_level", default="UNKNOWN").upper()
+        rows.append(
+            {
+                "Software Name": name,
+                "Current Version": current_version,
+                "Latest Version": latest_version,
+                "Current CU": current_cu,
+                "Latest CU": latest_cu,
+                "Version Gap": gap,
+                "Need Update": "Yes" if needs_update else "No",
+                "Update Priority": update_priority(gap, risk),
+                "Status": "Outdated" if needs_update else "Up-to-date",
+                "Risk Level": risk,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def normalize_vulnerabilities(data: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for name, record in data.items():
+        cves = record.get("cves") or []
+        rows.append(
+            {
+                "Software Name": value(record, "software_name", default=name),
+                "Current Installed Version": value(record, "current_version", "version"),
+                "Latest Available Version": value(record, "latest_version", default=""),
+                "Version Assessed": value(record, "version_assessed", default="current"),
+                "CVE Severity": value(record, "severity", default="UNKNOWN").upper(),
+                "Risk Level": value(record, "risk_level", default="UNKNOWN").upper(),
+                "CVE Count": len(cves),
+                "Security Assessment": value(record, "assessment", default="No assessment available."),
+                "Source": value(record, "source", default="Unknown"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def normalize_package_readiness(data: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for name, record in data.items():
+        rows.append(
+            {
+                "Software Name": value(record, "Software Name", default=name),
+                "Vendor": value(record, "Vendor", default=vendor_for(name)),
+                "Current Version": value(record, "Current Version"),
+                "Target Version": value(record, "Target Version"),
+                "Package Readiness": value(record, "Package Readiness", default="Not Assessed"),
+                "Upgrade Impact": value(record, "Upgrade Impact", default="Medium"),
+                "Installer Type": value(record, "Installer Type", default="Vendor Package"),
+                "Owner": value(record, "Owner", default="Application Owner"),
+                "Release Notes": value(record, "Release Notes", default="Review vendor release notes."),
+                "Download Link": value(record, "Download Link", default="Vendor portal"),
+                "Blocker": value(record, "Blocker", default=""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for name, record in data.items():
+        rows.append(
+            {
+                "Software Name": value(record, "Software Name", default=name),
+                "Current Version": value(record, "Current Version"),
+                "Latest Version": value(record, "Target Version", "Package Version"),
+                "Package Version": value(record, "Package Version"),
+                "Installation Status": value(record, "Installation Status", default="Not Tested"),
+                "Compatibility Status": value(record, "Compatibility Status", default="Review Required"),
+                "Test Result": value(record, "Test Result", default="NOT TESTED"),
+                "Supported OS": value(record, "Supported OS", "Windows Version", default="Not available"),
+                "Supported Runtime": value(record, "Supported Runtime", ".NET Version", "Java Version", default="Not available"),
+                "Supported Browser": value(record, "Supported Browser", "Browser Version", default="Not available"),
+                "Database Dependency": value(record, "Database Dependency", "Supported Database", "Database Version", default="Not available"),
+                "Supported Architecture": value(record, "Supported Architecture", "OS Architecture", default="Not available"),
+                "Configured Environment": value(record, "Current Environment", default="Not provided in software.yml"),
+                "Current Environment": value(record, "Current Environment", default="Not provided in software.yml"),
+                "Requirement Source": value(record, "Requirement Source", default="Built-in compatibility rule"),
+                "Requirement Source URL": value(record, "Requirement Source URL", default=""),
+                "Requirement Confidence": value(record, "Requirement Confidence", default="Not available"),
+                "Last Verified": value(record, "Last Verified", default="Not available"),
+                "Test Notes": value(record, "Test Notes"),
+                "Test Date": value(record, "Test Date", default=""),
+                "Tested By": value(record, "Tested By", default=""),
+                "Evidence File": value(record, "Evidence File", default=""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def normalize_testcase_impact(data: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    for item in data.get("test_case_plan", []) or []:
+        rows.append({
+            "Software Name": value(item, "Software Name"),
+            "Current Version": value(item, "Current Version"),
+            "Target Version": value(item, "Target Version"),
+            "Test Coverage": value(item, "Test Coverage", default="Not Found"),
+            "Test Case ID": value(item, "Test Case ID"),
+            "Test Case Name": value(item, "Test Case Name"),
+            "Test Type": value(item, "Test Type"),
+            "Priority": value(item, "Priority", default=value(item, "Recommended Priority", default="High")),
+            "Automation Status": value(item, "Automation Status"),
+            "Owner": value(item, "Owner", default="QA Lead"),
+            "Applicable Version": value(item, "Applicable Version"),
+            "Precondition": value(item, "Precondition"),
+            "Expected Result": value(item, "Expected Result"),
+            "Recommendation": value(item, "Recommendation"),
+        })
+    return pd.DataFrame(rows)
+
+
+def add_environment_readiness(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "Compatibility Status" not in df.columns:
+        return df
+    copy = df.copy()
+    copy["Environment Readiness"] = copy["Compatibility Status"].replace({
+        "Review Required": "Needs Environment Review",
+        "Compatible": "Compatible / No Review Needed",
+    })
+    return copy
+
+
+def compliance_score(comparison_df: pd.DataFrame) -> int:
+    if comparison_df.empty:
+        return 0
+    compliant = (comparison_df["Need Update"] == "No").sum()
+    return round((compliant / len(comparison_df)) * 100)
+
+
+def last_scan_time(*datasets: dict[str, Any]) -> str:
+    timestamps: list[datetime] = []
+    for dataset in datasets:
+        for record in dataset.values():
+            if isinstance(record, dict):
+                metadata = record.get("cache_metadata") or {}
+                parsed = parse_ts(metadata.get("last_updated"))
+                if parsed:
+                    timestamps.append(parsed)
+    if not timestamps and METRICS_FILE.exists():
+        metrics = load_metrics(str(METRICS_FILE), file_mtime(METRICS_FILE))
+        if not metrics.empty and "ts" in metrics:
+            parsed_values = [parse_ts(str(ts)) for ts in metrics["ts"].dropna().tolist()]
+            timestamps.extend([item for item in parsed_values if item])
+    if not timestamps:
+        return "Not available"
+    return max(timestamps).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def next_scan_time(config: dict[str, Any]) -> str:
+    schedule = config.get("schedule_cron", "")
+    if schedule:
+        return describe_cron(schedule)
+    return (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def describe_cron(schedule: str) -> str:
+    parts = schedule.split()
+    if len(parts) != 5:
+        return schedule or "Not configured"
+    minute, hour, day_of_month, month, day_of_week = parts
+    if minute.startswith("*/") and hour == "*" and day_of_month == "*" and month == "*" and day_of_week == "*":
+        return f"Every {minute[2:]} minutes"
+    if minute == "0" and hour.startswith("*/") and day_of_month == "*" and month == "*" and day_of_week == "*":
+        return f"Every {hour[2:]} hours"
+    day_names = {
+        "0": "Sunday",
+        "1": "Monday",
+        "2": "Tuesday",
+        "3": "Wednesday",
+        "4": "Thursday",
+        "5": "Friday",
+        "6": "Saturday",
+        "7": "Sunday",
+    }
+    if not minute.isdigit() or not hour.isdigit():
+        return f"Custom schedule: {schedule}"
+    time_text = f"{hour.zfill(2)}:{minute.zfill(2)}"
+    if day_of_month == "*" and month == "*" and day_of_week == "*":
+        return f"Daily at {time_text}"
+    if day_of_month == "*" and month == "*" and day_of_week in day_names:
+        return f"Every {day_names[day_of_week]} at {time_text}"
+    if day_of_month != "*" and month == "*" and day_of_week == "*":
+        return f"Monthly on day {day_of_month} at {time_text}"
+    return f"Custom schedule: {schedule}"
+
+
+def render_app_header(page: str, workflow_status: str, last_scan: str) -> None:
+    status_tone = "ok" if workflow_status == "Completed" else "warn"
+    compact_last_scan = last_scan if last_scan == "Not available" else last_scan[5:]
+    user = current_user()
+    role_label = current_role()
+    st.markdown(
+        f"""
+        <div class="vm-shell-header">
+            <div>
+                <h1>Version Manager Command Center</h1>
+                <p>{page} · Software version, vulnerability, and reporting operations</p>
+            </div>
+            <div class="vm-header-actions">
+                {badge(workflow_status, status_tone)}
+                <span class="vm-chip">Last Scan: {compact_last_scan}</span>
+                <span class="vm-chip">{user.get("display_name", user.get("username", "User"))} - {role_label}</span>
+                <span class="vm-chip">Production</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def section_title(title: str, subtitle: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="vm-title">
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def badge(label: str, tone: str = "info") -> str:
+    return f'<span class="vm-status {tone}">{label}</span>'
+
+
+def risk_tone(risk: str) -> str:
+    risk = risk.upper()
+    if risk in {"CRITICAL", "HIGH"}:
+        return "bad"
+    if risk == "MEDIUM":
+        return "warn"
+    if risk in {"LOW", "NONE"}:
+        return "ok"
+    return "info"
+
+
+def posture_label(score: int, updates: int, critical: int, high: int) -> tuple[str, str]:
+    if critical or high:
+        return "Security Attention Required", "bad"
+    if updates:
+        return "Maintenance Required", "warn"
+    if score >= 95:
+        return "Healthy", "ok"
+    return "Monitor", "info"
+
+
+def render_posture_strip(comparison_df: pd.DataFrame, vuln_df: pd.DataFrame) -> None:
+    total = len(comparison_df)
+    updates = int((comparison_df["Need Update"] == "Yes").sum()) if not comparison_df.empty else 0
+    score = compliance_score(comparison_df)
+    risk_counts = vuln_df["Risk Level"].value_counts().to_dict() if not vuln_df.empty else {}
+    posture, tone = posture_label(score, updates, risk_counts.get("CRITICAL", 0), risk_counts.get("HIGH", 0))
+    highest = next((risk for risk in RISK_ORDER if risk_counts.get(risk, 0)), "NONE")
+    st.markdown(
+        f"""
+        <div class="vm-posture">
+            <div class="vm-posture-item primary">
+                <div class="vm-posture-label">Overall Posture</div>
+                <div class="vm-posture-value">{posture}</div>
+                <div class="vm-posture-note">{updates} of {total} applications require updates</div>
+            </div>
+            <div class="vm-posture-item">
+                <div class="vm-posture-label">Compliance Score</div>
+                <div class="vm-posture-value">{score}%</div>
+                <div class="vm-posture-note">Version compliance against latest catalog</div>
+            </div>
+            <div class="vm-posture-item">
+                <div class="vm-posture-label">Highest Security Risk</div>
+                <div class="vm-posture-value">{highest.title()}</div>
+                <div class="vm-posture-note">{risk_counts.get(highest, 0)} item(s) at this level</div>
+            </div>
+            <div class="vm-posture-item">
+                <div class="vm-posture-label">Update Exposure</div>
+                <div class="vm-posture-value">{updates}</div>
+                <div class="vm-posture-note">Open remediation candidates</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def style_operational_table(df: pd.DataFrame) -> Any:
+    if df.empty:
+        return df
+
+    def color_cell(value: Any) -> str:
+        text = str(value).upper()
+        if text in {"CRITICAL", "HIGH", "YES", "OUTDATED"}:
+            return "background-color: #FCE8E6; color: #8A1C12; font-weight: 700; border: 1px solid #F4B8B2;"
+        if text in {"MEDIUM", "MAJOR GAP", "CU GAP"}:
+            return "background-color: #FFF4D6; color: #7A4B00; font-weight: 700; border: 1px solid #F3D58A;"
+        if text in {"LOW", "MINOR GAP"}:
+            return "background-color: #E8F2FF; color: #174A7C; font-weight: 700; border: 1px solid #BBD7F2;"
+        if text in {"NO", "UP-TO-DATE", "NONE"}:
+            return "background-color: #E7F6ED; color: #135D31; font-weight: 700; border: 1px solid #B9E3C8;"
+        return ""
+
+    return (
+        df.style
+        .map(color_cell)
+        .set_properties(**{"color": "#1F2937", "background-color": "#FFFFFF"})
+        .set_table_styles(
+            [
+                {
+                    "selector": "th",
+                    "props": [
+                        ("background-color", "#F3F6FA"),
+                        ("color", "#1F2937"),
+                        ("font-weight", "700"),
+                        ("border-bottom", "1px solid #D8DEE8"),
+                    ],
+                },
+                {
+                    "selector": "td",
+                    "props": [
+                        ("border-bottom", "1px solid #E5EAF0"),
+                    ],
+                },
+            ]
+        )
+    )
+
+
+def readable_cell_class(value: Any) -> str:
+    text = str(value).upper()
+    if text in {"CRITICAL", "HIGH", "YES", "OUTDATED"}:
+        return "vm-cell-red"
+    if text in {"MEDIUM", "MAJOR GAP", "CU GAP"}:
+        return "vm-cell-amber"
+    if text in {"LOW", "MINOR GAP"}:
+        return "vm-cell-blue"
+    if text in {"NO", "UP-TO-DATE", "NONE"}:
+        return "vm-cell-green"
+    return ""
+
+
+def configured_users(config: dict[str, Any]) -> list[dict[str, str]]:
+    users = config.get("users")
+    if isinstance(users, list) and users:
+        return [
+            {
+                "username": str(user.get("username", "")).strip(),
+                "password": str(user.get("password", "")),
+                "role": _normalize_role(user.get("role")),
+                "display_name": str(user.get("display_name") or user.get("username") or "").strip(),
+            }
+            for user in users
+            if isinstance(user, dict) and user.get("username")
+        ]
+    return [
+        {"username": "admin", "password": "admin", "role": ROLE_ADMIN, "display_name": "Administrator"},
+        {"username": "release", "password": "release", "role": ROLE_RELEASE_ENGINEER, "display_name": "Release Engineer"},
+        {"username": "qa", "password": "qa", "role": ROLE_QA_ENGINEER, "display_name": "QA Engineer"},
+    ]
+
+
+def _normalize_role(role: Any) -> str:
+    value = str(role or ROLE_QA_ENGINEER).strip().lower()
+    if value == "admin":
+        return ROLE_ADMIN
+    if value in {"operator", "packager", "release engineer", "release_engineer", "release-engineer"}:
+        return ROLE_RELEASE_ENGINEER
+    if value in {"viewer", "tester", "qa", "qa engineer", "qa_engineer", "qa-engineer"}:
+        return ROLE_QA_ENGINEER
+    return ROLE_QA_ENGINEER
+
+
+def current_user() -> dict[str, str]:
+    return st.session_state.get("vm_user") or {}
+
+
+def current_role() -> str:
+    return _normalize_role(current_user().get("role"))
+
+
+def can_run_operations() -> bool:
+    return current_role() in ACTION_ROLES
+
+
+def can_manage_settings() -> bool:
+    return current_role() in ADMIN_ROLES
+
+
+def prepare_email_report_files(
+    comparison: dict[str, dict],
+    vulnerabilities: dict[str, dict] | None = None,
+) -> tuple[str, str]:
+    body = build_report(comparison, vulnerabilities or {})
+    html_body = build_html_report(comparison, vulnerabilities or {})
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    EMAIL_TEXT_FILE.write_text(body, encoding="utf-8")
+    EMAIL_HTML_FILE.write_text(html_body, encoding="utf-8")
+    return body, html_body
+
+
+def _auth_secret(config: dict[str, Any]) -> bytes:
+    auth_cfg = config.get("auth", {})
+    configured_secret = str(auth_cfg.get("session_secret") or "").strip()
+    if configured_secret:
+        return configured_secret.encode("utf-8")
+    seed = json.dumps(
+        {
+            "users": [
+                {
+                    "username": user["username"],
+                    "password": user["password"],
+                    "role": user["role"],
+                }
+                for user in configured_users(config)
+            ],
+            "smtp_sender": (config.get("smtp") or {}).get("sender", ""),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(seed.encode("utf-8")).digest()
+
+
+def _auth_token_ttl_seconds(config: dict[str, Any]) -> int:
+    auth_cfg = config.get("auth", {})
+    try:
+        hours = float(auth_cfg.get("session_ttl_hours", 12))
+    except (TypeError, ValueError):
+        hours = 12
+    return max(1, int(hours * 3600))
+
+
+def _sign_auth_payload(payload: dict[str, Any], config: dict[str, Any]) -> str:
+    payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    payload_b64 = base64.urlsafe_b64encode(payload_json).decode("ascii").rstrip("=")
+    signature = hmac.new(_auth_secret(config), payload_b64.encode("ascii"), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    return f"{payload_b64}.{sig_b64}"
+
+
+def _decode_auth_token(token: str, config: dict[str, Any]) -> dict[str, str] | None:
+    try:
+        payload_b64, sig_b64 = token.split(".", 1)
+        expected = hmac.new(_auth_secret(config), payload_b64.encode("ascii"), hashlib.sha256).digest()
+        actual = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+        if not hmac.compare_digest(expected, actual):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+    except (ValueError, json.JSONDecodeError, TypeError):
+        return None
+
+    if int(payload.get("expires_at", 0)) < int(time.time()):
+        return None
+
+    token_user = str(payload.get("username") or "").strip()
+    for user in configured_users(config):
+        if user["username"].lower() == token_user.lower():
+            return {
+                "username": user["username"],
+                "role": user["role"],
+                "display_name": user["display_name"] or user["username"],
+            }
+    return None
+
+
+def _query_param_value(name: str) -> str | None:
+    value = st.query_params.get(name)
+    if isinstance(value, list):
+        return str(value[0]) if value else None
+    return str(value) if value else None
+
+
+def _restore_user_from_auth_token(config: dict[str, Any]) -> bool:
+    token = _query_param_value("vm_session")
+    if not token:
+        return False
+    user = _decode_auth_token(token, config)
+    if not user:
+        st.query_params.pop("vm_session", None)
+        return False
+    st.session_state["vm_user"] = user
+    return True
+
+
+def _persist_user_session(user: dict[str, str], config: dict[str, Any]) -> None:
+    payload = {
+        "username": user["username"],
+        "issued_at": int(time.time()),
+        "expires_at": int(time.time()) + _auth_token_ttl_seconds(config),
+    }
+    st.query_params["vm_session"] = _sign_auth_payload(payload, config)
+
+
+def _clear_user_session() -> None:
+    st.session_state.pop("vm_user", None)
+    st.query_params.pop("vm_session", None)
+
+
+def require_login(config: dict[str, Any]) -> bool:
+    auth_cfg = config.get("auth", {})
+    if auth_cfg.get("enabled", True) is False:
+        st.session_state.setdefault("vm_user", {"username": "local", "role": ROLE_ADMIN, "display_name": "Local Admin"})
+        return True
+    if current_user():
+        return True
+    if _restore_user_from_auth_token(config):
+        return True
+
+    login_placeholder = st.empty()
+    with login_placeholder.container():
+        _, center, _ = st.columns([1.2, 1, 1.2])
+        with center:
+            st.markdown(
+                """
+                <div class="vm-login-wrap">
+                    <div class="vm-login-brand">Version Manager</div>
+                    <div class="vm-login-subtitle">
+                        Sign in to access software version monitoring, vulnerability assessment, reports, and operational controls.
+                    </div>
+                    <div class="vm-login-meta">
+                        <span class="vm-chip">Enterprise Access</span>
+                        <span class="vm-chip">Role Based</span>
+                        <span class="vm-chip">Production</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            with st.form("vm_login_form"):
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+            if submitted:
+                for user in configured_users(config):
+                    if username.strip().lower() == user["username"].lower() and password == user["password"]:
+                        authenticated_user = {
+                            "username": user["username"],
+                            "role": user["role"],
+                            "display_name": user["display_name"] or user["username"],
+                        }
+                        st.session_state["vm_user"] = authenticated_user
+                        _persist_user_session(authenticated_user, config)
+                        login_placeholder.empty()
+                        return True
+                st.error("Invalid username or password.")
+
+    return False
+
+
+def render_access_denied(required: str) -> None:
+    st.warning(f"This page requires {required} access. Your current role is {current_role()}.")
+
+
+def pages_for_role(role: str) -> list[str]:
+    pages = [*BASE_PAGES]
+    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        insert_at = pages.index("Compatibility Check") if "Compatibility Check" in pages else len(pages)
+        for page in reversed(RELEASE_PAGES):
+            pages.insert(insert_at, page)
+    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        insert_at = pages.index("Workflow Monitor") if "Workflow Monitor" in pages else len(pages)
+        for page in reversed(SECURITY_PAGES):
+            pages.insert(insert_at, page)
+    elif role == ROLE_QA_ENGINEER:
+        insert_at = pages.index("Workflow Monitor") if "Workflow Monitor" in pages else len(pages)
+        pages.insert(insert_at, "Cache Analytics")
+    if role in {ROLE_ADMIN, ROLE_QA_ENGINEER}:
+        insert_at = pages.index("Workflow Monitor") if "Workflow Monitor" in pages else len(pages)
+        for page in reversed(QA_PAGES):
+            pages.insert(insert_at, page)
+    if role in ADMIN_ROLES:
+        pages.extend(ADMIN_PAGES)
+    return pages
+
+
+def visible_output_files_for_role(role: str, include_operational_reports: bool = True) -> list[tuple[str, Path]]:
+    files: list[tuple[str, Path]] = [("Management Report - HTML", EMAIL_HTML_FILE)]
+    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
+        files.append(("Technical Report - Excel", EXCEL_FILE))
+    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        files.append(("Package Readiness Data", PACKAGE_READINESS_FILE))
+    if role == ROLE_ADMIN:
+        files.append(("QA Validation Data", QA_VALIDATION_FILE))
+    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
+        files.append(("Test Case Impact Plan", TESTCASE_IMPACT_EXCEL_FILE))
+    if include_operational_reports and role == ROLE_ADMIN:
+        files.extend([
+            ("Comparison Report", COMPARISON_FILE),
+            ("Vulnerability Report", VULNERABILITY_FILE),
+            ("Test Case Impact Data", TESTCASE_IMPACT_FILE),
+        ])
+    return files
+
+
+def with_actor(result: dict[str, Any]) -> dict[str, Any]:
+    user = current_user()
+    result["triggered_by"] = user.get("username", "unknown")
+    result["triggered_by_role"] = current_role()
+    result["triggered_at"] = datetime.now().isoformat(timespec="seconds")
+    return result
+
+
+def render_readable_table(df: pd.DataFrame) -> None:
+    if df.empty:
+        st.info("No records found.")
+        return
+    header_html = "".join(f"<th>{col}</th>" for col in df.columns)
+    body_rows = []
+    safe_df = df.fillna("").astype(str)
+    for _, row in safe_df.iterrows():
+        cells = []
+        for value in row:
+            css_class = readable_cell_class(value)
+            class_attr = f' class="{css_class}"' if css_class else ""
+            escaped = (
+                value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
+            cells.append(f"<td{class_attr}>{escaped}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    st.markdown(
+        f"""
+        <div class="vm-table-wrap">
+            <table class="vm-readable-table">
+                <thead><tr>{header_html}</tr></thead>
+                <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def bar_chart(df: pd.DataFrame, x: str, y: str, title: str, color_field: str | None = None) -> None:
+    if df.empty:
+        st.info(f"No data available for {title}.")
+        return
+    height = max(240, min(420, 78 + (len(df) * 46)))
+    chart = (
+        alt.Chart(df)
+        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+        .encode(
+            y=alt.Y(
+                f"{x}:N",
+                title=None,
+                sort="-x",
+                axis=alt.Axis(labelLimit=260, labelPadding=8),
+            ),
+            x=alt.X(
+                f"{y}:Q",
+                title=None,
+                axis=alt.Axis(grid=True, tickMinStep=1),
+            ),
+            tooltip=list(df.columns),
+        )
+        .properties(height=height, title=title)
+        .configure_view(stroke=None)
+        .configure_axis(
+            labelColor="#1f2937",
+            titleColor="#1f2937",
+            labelFontSize=12,
+            titleFontSize=12,
+        )
+        .configure_title(
+            color="#111827",
+            fontSize=14,
+            anchor="start",
+            dy=-4,
+        )
+    )
+    if color_field:
+        chart = chart.encode(
+            color=alt.Color(
+                f"{color_field}:N",
+                legend=alt.Legend(orient="bottom", labelLimit=220),
+                scale=alt.Scale(range=["#38bdf8", "#22c55e", "#f59e0b", "#f97316", "#ef4444"]),
+            )
+        )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def donut_chart(df: pd.DataFrame, category: str, value_col: str, title: str) -> None:
+    if df.empty:
+        st.info(f"No data available for {title}.")
+        return
+    chart = (
+        alt.Chart(df)
+        .mark_arc(innerRadius=65, outerRadius=110)
+        .encode(
+            theta=alt.Theta(f"{value_col}:Q"),
+            color=alt.Color(
+                f"{category}:N",
+                legend=alt.Legend(orient="bottom", labelLimit=220),
+                scale=alt.Scale(range=["#22c55e", "#f59e0b", "#f97316", "#ef4444", "#38bdf8", "#94a3b8"]),
+            ),
+            tooltip=[category, value_col],
+        )
+        .properties(height=280, title=title)
+        .configure_view(stroke=None)
+        .configure_axis(labelColor="#1f2937", titleColor="#1f2937")
+        .configure_title(color="#111827", fontSize=14, anchor="start", dy=-4)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def searchable_table(df: pd.DataFrame, key: str, filter_columns: list[str] | None = None) -> pd.DataFrame:
+    if df.empty:
+        st.info("No records found. Run the pipeline to generate the required output files.")
+        return df
+    query = st.text_input("Search", key=f"{key}_search", placeholder="Search software, vendor, version, status")
+    filtered = df.copy()
+    if query:
+        mask = filtered.astype(str).apply(lambda row: row.str.contains(query, case=False, na=False).any(), axis=1)
+        filtered = filtered[mask]
+    if filter_columns:
+        cols = st.columns(len(filter_columns))
+        for col, field in zip(cols, filter_columns):
+            values = ["All"] + sorted([str(item) for item in filtered[field].dropna().unique().tolist()])
+            selected = col.selectbox(field, values, key=f"{key}_{field}")
+            if selected != "All":
+                filtered = filtered[filtered[field].astype(str) == selected]
+    render_readable_table(filtered)
+    st.download_button(
+        "Export CSV",
+        filtered.to_csv(index=False).encode("utf-8"),
+        file_name=f"{key}.csv",
+        mime="text/csv",
+        use_container_width=False,
+    )
+    return filtered
+
+
+def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str) -> str:
+    with st.sidebar:
+        user = current_user()
+        st.markdown("### Version Manager")
+        st.caption("Software posture and remediation operations")
+        st.markdown(
+            f"""
+            <div class="vm-sidebar-card">
+                <div class="vm-sidebar-kv">Signed In<strong>{user.get("display_name", user.get("username", "Unknown"))}</strong></div>
+                <div class="vm-sidebar-kv">Role<strong>{current_role()}</strong></div>
+                <div class="vm-sidebar-kv">Project<strong>Version Manager</strong></div>
+                <div class="vm-sidebar-kv">Scope<strong>Version and Security Assessment</strong></div>
+                <div class="vm-sidebar-kv">Workflow<strong>{workflow_status}</strong></div>
+                <div class="vm-sidebar-kv">Last Scan<strong>{last_scan}</strong></div>
+                <div class="vm-sidebar-kv">Next Scan<strong>{next_scan_time(config)}</strong></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Sign Out", use_container_width=True):
+            _clear_user_session()
+            st.rerun()
+        st.divider()
+        pages = pages_for_role(current_role())
+        if can_run_operations():
+            pages.insert(1, "Operations")
+        return st.radio(
+            "Navigation",
+            pages,
+            label_visibility="collapsed",
+        )
+
+
+def render_operation_result(result: dict[str, Any] | None) -> None:
+    if not result:
+        st.info("No operation has been run in this session.")
+        return
+    if result.get("error"):
+        st.error("Operation failed. Review the message below and correct the configuration or input data.")
+        st.code(str(result["error"]))
+        return
+
+    operation = result.get("operation", "operation")
+    actor = result.get("triggered_by") or current_user().get("username", "unknown")
+    cards: list[tuple[str, Any, str]] = []
+    title = "Operation Completed"
+    summary = "The selected operation finished successfully."
+    next_action = "Review the refreshed dashboard pages."
+
+    if operation == "full_pipeline":
+        if current_role() == ROLE_QA_ENGINEER:
+            title = "Validation Workflow Completed"
+            summary = "Compatibility and QA validation outputs were refreshed by the controlled backend workflow."
+        else:
+            title = "Full Pipeline Completed"
+            summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and email notification were processed."
+        cards = [
+            ("Applications Checked", result.get("total", 0), "Software records processed"),
+            ("Updates Required", len(result.get("needs_update", [])), "Applications needing remediation"),
+            ("Email Sent", "Yes" if result.get("email_sent") else "No", "Notification delivery status"),
+            ("Data Mode", "Fresh Data" if result.get("cache_mode") == "fresh" else "Cache Enabled", "Whether the run used cache or requested fresh data"),
+        ]
+        if result.get("email_sent"):
+            next_action = "Open Dashboard or Reports to review the assessment package."
+        else:
+            next_action = "Review SMTP settings or approval configuration before sending email."
+    elif operation == "fetch_latest_versions":
+        title = "Latest Version Catalog Refreshed"
+        summary = "The approved latest-version catalog was updated for the selected software category."
+        cards = [
+            ("Applications Updated", result.get("total", 0), "Latest-version records refreshed"),
+            ("Data Mode", "Fresh Data" if result.get("cache_mode") == "fresh" else "Cache Enabled", "Whether the lookup used cache or requested fresh data"),
+        ]
+        next_action = "Run Compare Versions after current inventory is available."
+    elif operation == "fetch_current_versions":
+        title = "Current Inventory Refreshed"
+        summary = "Installed versions were resolved from configured servers with document fallback where needed."
+        cards = [
+            ("Applications Checked", result.get("total", 0), "Current-version records refreshed"),
+            ("Live Server Results", result.get("from_server", 0), "Resolved from configured servers"),
+            ("Document Fallback", result.get("from_document", 0), "Resolved from PDF inventory"),
+        ]
+        next_action = "Run Compare Versions after latest-version data is available."
+    elif operation == "compare_versions":
+        title = "Version Comparison Completed"
+        summary = "Current versions were compared against the latest-version catalog."
+        cards = [
+            ("Applications Compared", result.get("total", 0), "Software records compared"),
+            ("Updates Required", result.get("needs_update", 0), "Applications behind latest version"),
+        ]
+        next_action = "Open Version Comparison or send the report email."
+    elif operation == "send_report_email":
+        sent = bool(result.get("sent"))
+        title = "Email Report Sent" if sent else "Email Report Was Not Sent"
+        summary = "The version assessment email was submitted to the configured SMTP service." if sent else "The email could not be delivered. Check SMTP settings and recipient configuration."
+        cards = [
+            ("Delivery Status", "Sent" if sent else "Failed", "SMTP result"),
+            ("Recipients", result.get("recipients", 0), "Configured recipient count"),
+            ("Subject", result.get("subject", "Not available"), "Email subject"),
+        ]
+        next_action = "Confirm delivery with the recipients." if sent else "Open Settings and verify SMTP configuration."
+    st.markdown(
+        f"""
+        <div class="vm-card">
+            <strong>{title}</strong>
+            <div class="vm-posture-note">{summary}</div>
+            <div class="vm-posture-note">Triggered by: {actor}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if cards:
+        cols = st.columns(min(len(cards), 4))
+        for col, (label, val, help_text) in zip(cols, cards):
+            col.metric(label, val, help=help_text)
+
+    st.info(f"Next recommended action: {next_action}")
+    if not result.get("email_sent", True) and result.get("email_error"):
+        st.warning(f"Email was not sent: {result.get('email_error')}")
+
+    available_files = visible_output_files_for_role(current_role())
+    existing_files = [(label, path) for label, path in available_files if path.exists()]
+    if existing_files:
+        st.markdown("**Available outputs**")
+        file_cols = st.columns(min(len(existing_files), 4))
+        for col, (label, path) in zip(file_cols, existing_files):
+            with col:
+                st.caption(label)
+                st.download_button(
+                    "Download",
+                    path.read_bytes(),
+                    file_name=path.name,
+                    use_container_width=True,
+                )
+
+    with st.expander("Technical details"):
+        st.json(result, expanded=False)
+
+
+def render_operations(config: dict[str, Any]) -> None:
+    if not can_run_operations():
+        render_access_denied("Administrator, Release Engineer, or QA Engineer")
+        return
+
+    section_title("Operations", "Run scans now, review the automatic schedule, and execute individual validation steps.")
+    st.markdown(
+        """
+        <div class="vm-card">
+            <strong>How scans are triggered</strong>
+            <div class="vm-posture-note">
+                Scheduled scans run automatically when the backend service is running. Use the manual trigger when you need an immediate scan outside the normal schedule.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    categories = ["ALL", "SourceOne", "DPS", "Other"]
+    configured_default = config.get("default_category", "ALL")
+    default_index = categories.index(configured_default) if configured_default in categories else 0
+    col1, col2, col3 = st.columns([1.1, 1, 1])
+    with col1:
+        category = st.selectbox("Software Category", categories, index=default_index)
+    with col2:
+        force_refresh = st.toggle(
+            "Get Fresh Data",
+            value=False,
+            help="Turn on to bypass cached results and retrieve fresh vendor and vulnerability data. Leave off to use cache when valid.",
+        )
+    with col3:
+        st.metric("Data Refresh Mode", "Fresh Data" if force_refresh else "Cache Enabled")
+
+    st.subheader("Automatic Scan Schedule")
+    current_schedule = config.get("schedule_cron", "0 9 * * 1")
+    if "custom_schedule_expression" not in st.session_state:
+        st.session_state["custom_schedule_expression"] = current_schedule
+    schedule_presets = {
+        "Weekly - Monday 09:00": "0 9 * * 1",
+        "Daily - 09:00": "0 9 * * *",
+        "Monthly - Day 1 09:00": "0 9 1 * *",
+    }
+    preset_names = list(schedule_presets.keys()) + ["Custom"]
+    schedule_col0, schedule_col1, schedule_col2, schedule_col3 = st.columns([0.9, 1.2, 1.2, 1])
+    with schedule_col0:
+        st.metric("Automatic Scan", "Enabled" if current_schedule else "Not Configured")
+    with schedule_col1:
+        selected_schedule = st.selectbox("Schedule Preset", preset_names)
+    with schedule_col2:
+        if selected_schedule == "Custom":
+            selected_cron = st.text_input(
+                "Schedule Expression",
+                value=st.session_state["custom_schedule_expression"],
+                key="custom_schedule_input",
+                help="Use standard cron format: minute hour day-of-month month day-of-week.",
+            )
+            st.session_state["custom_schedule_expression"] = selected_cron
+        else:
+            selected_cron = schedule_presets[selected_schedule]
+            st.text_input("Schedule Expression", value=selected_cron, disabled=True)
+    with schedule_col3:
+        st.metric("Next Scan", describe_cron(selected_cron))
+
+    valid_cron, cron_error = validate_cron_expression(selected_cron)
+    if not valid_cron:
+        st.error(f"Schedule expression is invalid: {cron_error}")
+    save_col1, save_col2 = st.columns([0.7, 1.3])
+    with save_col1:
+        save_clicked = st.button("Save Automatic Schedule", disabled=not valid_cron, use_container_width=True)
+    with save_col2:
+        st.caption("Saving updates config.json and applies the schedule to this dashboard background scheduler while the dashboard is running.")
+    if save_clicked:
+        try:
+            save_schedule_config(selected_cron)
+            next_run = apply_background_schedule(selected_cron, category)
+            st.session_state["schedule_save_result"] = {
+                "status": "saved",
+                "schedule": selected_cron,
+                "description": describe_cron(selected_cron),
+                "next_run": next_run,
+            }
+        except Exception as exc:
+            st.session_state["schedule_save_result"] = {"status": "error", "error": str(exc)}
+
+    schedule_result = st.session_state.get("schedule_save_result")
+    if schedule_result:
+        if schedule_result.get("status") == "saved":
+            st.success(
+                f"Automatic schedule saved: {schedule_result['description']}. "
+                f"Next background run: {schedule_result['next_run']}."
+            )
+        else:
+            st.error(f"Schedule was not saved: {schedule_result.get('error')}")
+
+    qa_mode = current_role() == ROLE_QA_ENGINEER
+    st.subheader("Manual Validation Trigger" if qa_mode else "Manual Scan Trigger")
+    left, right = st.columns([1.2, 1])
+    with left:
+        button_label = "Run Validation Workflow" if qa_mode else "Run Scan Now"
+        spinner_text = (
+            "Running validation workflow: inventory, comparison, compatibility, and QA validation..."
+            if qa_mode
+            else "Running full pipeline: latest versions, current versions, comparison, vulnerability assessment, Excel, and email..."
+        )
+        if st.button(button_label, type="primary", use_container_width=True):
+            with st.spinner(spinner_text):
+                try:
+                    result = run_async(trigger_full_pipeline(category, force_refresh))
+                    clear_dashboard_cache()
+                    st.session_state["last_operation_result"] = with_actor(result)
+                except Exception as exc:
+                    st.session_state["last_operation_result"] = with_actor({"error": str(exc)})
+    with right:
+        help_text = (
+            "Runs the controlled backend workflow and refreshes compatibility and QA validation outputs for deployment testing."
+            if qa_mode
+            else "Runs latest-version lookup, current inventory collection, comparison, vulnerability assessment, Excel generation, and email reporting immediately."
+        )
+        st.markdown(
+            f"""
+            <div class="vm-card">
+                <div class="vm-posture-note">
+                    {help_text}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.subheader("Individual Actions")
+    action_cols = st.columns(4)
+    with action_cols[0]:
+        if st.button("Fetch Latest Versions", use_container_width=True):
+            with st.spinner("Fetching latest vendor versions..."):
+                try:
+                    result = run_async(trigger_fetch_latest_versions(category, force_refresh))
+                    clear_dashboard_cache()
+                    st.session_state["last_operation_result"] = with_actor(result)
+                except Exception as exc:
+                    st.session_state["last_operation_result"] = with_actor({"error": str(exc)})
+    with action_cols[1]:
+        if st.button("Fetch Current Versions", use_container_width=True):
+            with st.spinner("Resolving current versions from servers/PDF..."):
+                try:
+                    result = run_async(trigger_fetch_current_versions(category))
+                    clear_dashboard_cache()
+                    st.session_state["last_operation_result"] = with_actor(result)
+                except Exception as exc:
+                    st.session_state["last_operation_result"] = with_actor({"error": str(exc)})
+    with action_cols[2]:
+        if st.button("Compare Versions", use_container_width=True):
+            with st.spinner("Comparing current versions against latest versions..."):
+                try:
+                    result = trigger_compare_versions()
+                    clear_dashboard_cache()
+                    st.session_state["last_operation_result"] = with_actor(result)
+                except Exception as exc:
+                    st.session_state["last_operation_result"] = with_actor({"error": str(exc)})
+    with action_cols[3]:
+        if st.button("Send Version Report Email", use_container_width=True):
+            with st.spinner("Building and sending the version report email..."):
+                try:
+                    result = trigger_send_report_email()
+                    clear_dashboard_cache()
+                    st.session_state["last_operation_result"] = with_actor(result)
+                except Exception as exc:
+                    st.session_state["last_operation_result"] = with_actor({"error": str(exc)})
+
+    st.subheader("Execution Summary")
+    render_operation_result(st.session_state.get("last_operation_result"))
+
+
+def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, metrics_df: pd.DataFrame) -> None:
+    role = current_role()
+    if role == ROLE_RELEASE_ENGINEER:
+        section_title("Release Engineering Dashboard", "Package readiness, version drift, upgrade planning, and security advisory visibility.")
+    elif role == ROLE_QA_ENGINEER:
+        section_title("QA Validation Dashboard", "Installation validation, compatibility review, version status, and report access.")
+    else:
+        section_title("Administrator Dashboard", "Operational posture, update exposure, security risk, and platform controls at a glance.")
+    total = len(current_df)
+    updates = int((comparison_df["Need Update"] == "Yes").sum()) if not comparison_df.empty else 0
+    up_to_date = max(total - updates, 0)
+    risk_counts = vuln_df["Risk Level"].value_counts().to_dict() if not vuln_df.empty else {}
+    score = compliance_score(comparison_df)
+    render_posture_strip(comparison_df, vuln_df)
+
+    cols = st.columns(4)
+    metrics = [
+        ("Total Applications", total, None),
+        ("Requiring Update", updates, None),
+        ("Up-to-Date", up_to_date, None),
+        ("Security Risk Items", risk_counts.get("CRITICAL", 0) + risk_counts.get("HIGH", 0) + risk_counts.get("MEDIUM", 0), None),
+    ]
+    for col, (label, val, delta) in zip(cols, metrics):
+        col.metric(label, val, delta)
+
+    left, right = st.columns(2)
+    with left:
+        if not comparison_df.empty:
+            gap_df = comparison_df["Version Gap"].value_counts().reset_index()
+            gap_df.columns = ["Version Gap", "Count"]
+            bar_chart(gap_df, "Version Gap", "Count", "Version Gap Distribution")
+    with right:
+        if not comparison_df.empty:
+            priority_df = comparison_df["Update Priority"].value_counts().reset_index()
+            priority_df.columns = ["Update Priority", "Count"]
+            bar_chart(priority_df, "Update Priority", "Count", "Remediation Priority")
+
+    st.subheader("Top Applications Requiring Immediate Update")
+    if not comparison_df.empty:
+        priority_rank = {"Critical": 1, "High": 2, "Medium": 3, "Low": 4, "None": 5}
+        top = comparison_df[comparison_df["Need Update"] == "Yes"].copy()
+        top["Priority Rank"] = top["Update Priority"].map(priority_rank).fillna(9)
+        st.dataframe(
+            style_operational_table(
+            top.sort_values(["Priority Rank", "Software Name"]).head(10)[
+                ["Software Name", "Current Version", "Latest Version", "Version Gap", "Update Priority", "Risk Level"]
+            ]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Recent Scan Timeline")
+    if not metrics_df.empty and {"metric", "value", "ts"}.issubset(metrics_df.columns):
+        timeline = metrics_df.copy()
+        timeline["Duration Seconds"] = timeline["value"].astype(float) / 1000
+        st.dataframe(
+            timeline[["ts", "metric", "Duration Seconds", "trace_id"]].tail(8),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No scan timeline metrics available.")
+
+
+def render_inventory(current_df: pd.DataFrame) -> None:
+    section_title("Software Inventory", "Installed software inventory from live servers and document extraction.")
+    display_df = current_df.drop(columns=["Source"], errors="ignore")
+    searchable_table(display_df, "software_inventory", ["Vendor", "Environment"])
+
+
+def render_latest(latest_df: pd.DataFrame) -> None:
+    section_title("Latest Versions", "Approved latest-version catalog with source and cache provenance.")
+    if latest_df.empty:
+        st.info("No latest version records found.")
+        return
+    display = latest_df.drop(columns=["Cache Status"], errors="ignore")
+    searchable_table(display, "latest_versions", ["Vendor", "Source"])
+
+
+def render_comparison(comparison_df: pd.DataFrame) -> None:
+    section_title("Version Comparison", "Current versus latest version analysis and update prioritization.")
+    if comparison_df.empty:
+        st.info("No comparison data found.")
+        return
+    score = compliance_score(comparison_df)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Compliance Percentage", f"{score}%")
+    col2.metric("Outdated Applications", int((comparison_df["Need Update"] == "Yes").sum()) if not comparison_df.empty else 0)
+    col3.metric("Critical or Major Gaps", int(comparison_df["Version Gap"].isin(["Major Gap", "CU Gap"]).sum()) if not comparison_df.empty else 0)
+
+    searchable_table(comparison_df, "version_comparison", ["Need Update", "Version Gap", "Update Priority"])
+
+    st.subheader("Version Drift Analysis")
+    if not comparison_df.empty:
+        drift = comparison_df["Version Gap"].value_counts().reset_index()
+        drift.columns = ["Version Gap", "Count"]
+        bar_chart(drift, "Version Gap", "Count", "Version Drift by Gap Type")
+
+
+def render_package_readiness(readiness_df: pd.DataFrame) -> None:
+    if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        render_access_denied("Administrator or Release Engineer")
+        return
+    section_title("Package Readiness", "Release engineering workspace for package preparation, vendor review, and upgrade impact.")
+    if readiness_df.empty:
+        st.info("No package readiness data found. Run version comparison first.")
+        return
+    counts = readiness_df["Package Readiness"].value_counts().to_dict()
+    cols = st.columns(4)
+    cols[0].metric("Ready", counts.get("Ready for Packaging", 0))
+    cols[1].metric("Vendor Patch Available", counts.get("Vendor Patch Available", 0))
+    cols[2].metric("Dependency Review", counts.get("Dependency Review Required", 0))
+    cols[3].metric("Blocked", counts.get("Blocked", 0))
+    searchable_table(
+        readiness_df,
+        "package_readiness",
+        ["Package Readiness", "Upgrade Impact", "Owner", "Installer Type", "Vendor"],
+    )
+
+
+def render_compatibility_check(qa_df: pd.DataFrame) -> None:
+    section_title("Compatibility Check", "Operating system, runtime, browser, database, and architecture readiness for deployment validation.")
+    if qa_df.empty:
+        st.info("No compatibility data found. Run version comparison first.")
+        return
+    qa_df = add_environment_readiness(qa_df)
+    review_required = int((qa_df["Compatibility Status"] != "Compatible").sum())
+    cols = st.columns(3)
+    cols[0].metric("Applications", len(qa_df))
+    cols[1].metric("Review Required", review_required)
+    cols[2].metric("Compatible", len(qa_df) - review_required)
+    columns = [
+        "Software Name",
+        "Environment Readiness",
+        "Current Version",
+        "Latest Version",
+        "Configured Environment",
+        "Supported OS",
+        "Supported Runtime",
+        "Supported Browser",
+        "Database Dependency",
+        "Supported Architecture",
+        "Requirement Source",
+        "Requirement Confidence",
+        "Last Verified",
+    ]
+    searchable_table(qa_df[columns], "compatibility_check", ["Environment Readiness", "Supported Architecture", "Requirement Confidence"])
+
+
+def render_qa_validation(qa_df: pd.DataFrame) -> None:
+    if current_role() not in {ROLE_ADMIN, ROLE_QA_ENGINEER}:
+        render_access_denied("Administrator or QA Engineer")
+        return
+    section_title("QA Validation", "Installation verification, functional checks, package verification, and deployment test status.")
+    if qa_df.empty:
+        st.info("No QA validation data found. Run version comparison first.")
+        return
+    qa_df = add_environment_readiness(qa_df)
+    result_counts = qa_df["Test Result"].value_counts().to_dict()
+    cols = st.columns(4)
+    cols[0].metric("PASS", result_counts.get("PASS", 0))
+    cols[1].metric("FAIL", result_counts.get("FAIL", 0))
+    cols[2].metric("WARNING", result_counts.get("WARNING", 0))
+    cols[3].metric("NOT TESTED", result_counts.get("NOT TESTED", 0))
+    columns = [
+        "Software Name",
+        "Package Version",
+        "Installation Status",
+        "Test Result",
+        "Environment Readiness",
+        "Test Case Count",
+        "Test Coverage",
+        "Test Date",
+        "Tested By",
+        "Test Notes",
+        "Evidence File",
+    ]
+    impact = load_json(str(TESTCASE_IMPACT_FILE), file_mtime(TESTCASE_IMPACT_FILE))
+    impacted = impact.get("impacted_software", {}) if isinstance(impact, dict) else {}
+    qa_df["Test Case Count"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Case Count", 0))
+    qa_df["Test Coverage"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
+    searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
+
+    testcase_df = normalize_testcase_impact(impact)
+    st.subheader("Recommended Test Cases for Updates")
+    st.caption("These are mapped from Input/testcaseRepository.xlsx for software that requires an update.")
+    if testcase_df.empty:
+        st.info("No recommended test cases found. Run the full pipeline or confirm the testcase repository is available.")
+    else:
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Software With Updates", int(impact.get("summary", {}).get("software_requiring_update", 0)))
+        metric_cols[1].metric("Mapped From Repository", int(impact.get("summary", {}).get("software_with_test_coverage", 0)))
+        metric_cols[2].metric("Missing Repository Mapping", int(impact.get("summary", {}).get("software_without_test_coverage", 0)))
+        metric_cols[3].metric("Recommended Test Cases", int(impact.get("summary", {}).get("total_recommended_test_cases", 0)))
+        display_cols = [
+            "Software Name",
+            "Test Coverage",
+            "Test Case ID",
+            "Test Case Name",
+            "Test Type",
+            "Priority",
+            "Automation Status",
+            "Owner",
+            "Applicable Version",
+        ]
+        searchable_table(testcase_df[display_cols], "testcase_impact", ["Test Coverage", "Priority", "Test Type", "Owner"])
+        if TESTCASE_IMPACT_EXCEL_FILE.exists():
+            st.download_button(
+                "Download Recommended Test Case Plan",
+                TESTCASE_IMPACT_EXCEL_FILE.read_bytes(),
+                file_name=TESTCASE_IMPACT_EXCEL_FILE.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    st.subheader("Manual QA Update")
+    st.caption("Use this after QA has installed or validated a package. This updates output/qa_validation.json and optionally stores evidence under output/qa_evidence.")
+    with st.form("manual_qa_update_form"):
+        form_cols = st.columns([1.2, 1, 1])
+        software_name = form_cols[0].selectbox("Software", qa_df["Software Name"].tolist())
+        installation_status = form_cols[1].selectbox(
+            "Installation Status",
+            ["Not Tested", "Installed Successfully", "Failed", "Rollback Completed", "Pending Restart", "No Deployment Required"],
+        )
+        test_result = form_cols[2].selectbox(
+            "Test Result",
+            ["NOT TESTED", "PASS", "FAIL", "WARNING", "BASELINE VERIFIED"],
+        )
+        notes = st.text_area("QA Notes", placeholder="Add install result, validation notes, known issues, or rollback details.")
+        date_cols = st.columns([1, 1, 1])
+        test_date = date_cols[0].date_input("Test Date", value=datetime.now().date())
+        tested_by = date_cols[1].text_input("Tested By", value=current_user().get("display_name", current_user().get("username", "")))
+        evidence_file = date_cols[2].file_uploader("Upload Test Evidence", type=["txt", "log", "csv", "xlsx", "png", "jpg", "jpeg", "pdf"])
+        submitted = st.form_submit_button("Save QA Result", type="primary", use_container_width=True)
+    if submitted:
+        try:
+            save_qa_manual_update(
+                software_name,
+                installation_status,
+                test_result,
+                notes,
+                test_date,
+                tested_by,
+                evidence_file,
+            )
+            st.success(f"QA result saved for {software_name}.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"QA result was not saved: {exc}")
+
+
+def render_vulnerabilities(vuln_df: pd.DataFrame) -> None:
+    section_title("Vulnerability Assessment", "Security assessment of current installed versions with latest version context.")
+    if vuln_df.empty:
+        st.info("No vulnerability data found.")
+        return
+    risk_counts = vuln_df["Risk Level"].value_counts().to_dict()
+    cols = st.columns(5)
+    for col, risk in zip(cols, ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE"]):
+        col.metric(f"{risk.title()} Risk", risk_counts.get(risk, 0))
+
+    assessment_cols = [
+        "Software Name",
+        "Current Installed Version",
+        "Latest Available Version",
+        "Version Assessed",
+        "CVE Severity",
+        "Risk Level",
+        "Security Assessment",
+        "Source",
+    ]
+    searchable_table(vuln_df[assessment_cols], "vulnerability_assessment", ["Risk Level", "CVE Severity", "Version Assessed", "Source"])
+
+    left, right = st.columns(2)
+    with left:
+        heatmap_df = vuln_df[["Software Name", "Risk Level", "CVE Count"]].copy()
+        heatmap_df["Risk Score"] = heatmap_df["Risk Level"].map({"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "NONE": 0}).fillna(0)
+        chart = (
+            alt.Chart(heatmap_df)
+            .mark_rect()
+            .encode(
+                x=alt.X("Software Name:N", title=None),
+                y=alt.Y("Risk Level:N", title=None, sort=RISK_ORDER),
+                color=alt.Color("Risk Score:Q", scale=alt.Scale(range=["#1e293b", "#22c55e", "#f59e0b", "#f97316", "#ef4444"])),
+                tooltip=list(heatmap_df.columns),
+            )
+            .properties(height=280, title="Risk Heatmap")
+        )
+        st.altair_chart(chart, use_container_width=True)
+    with right:
+        severity_df = vuln_df["CVE Severity"].value_counts().reset_index()
+        severity_df.columns = ["Severity", "Count"]
+        donut_chart(severity_df, "Severity", "Count", "Severity Distribution")
+
+    st.subheader("Security Review Queue")
+    top = vuln_df.sort_values(["CVE Count", "Risk Level"], ascending=[False, True]).head(10)
+    st.dataframe(style_operational_table(top[["Software Name", "Risk Level", "CVE Severity", "CVE Count", "Security Assessment"]]), use_container_width=True, hide_index=True)
+
+    posture_score = max(0, 100 - (risk_counts.get("CRITICAL", 0) * 30) - (risk_counts.get("HIGH", 0) * 20) - (risk_counts.get("MEDIUM", 0) * 10))
+    st.progress(posture_score / 100, text=f"Security Posture Gauge: {posture_score}%")
+
+
+def performance_event(metric: str) -> tuple[str, str, str]:
+    mapping = {
+        "fetch_latest_versions.duration_ms": (
+            "Latest Version Check",
+            "Checked vendor/latest-version data for the selected software list.",
+            "Version Catalog",
+        ),
+        "fetch_current_versions.duration_ms": (
+            "Current Inventory Check",
+            "Collected installed versions from configured servers or document fallback.",
+            "Inventory",
+        ),
+        "compare_versions.duration_ms": (
+            "Version Comparison",
+            "Compared installed versions against latest approved versions.",
+            "Compliance",
+        ),
+        "check_vulnerabilities.duration_ms": (
+            "Vulnerability Check",
+            "Checked current installed versions against vulnerability data.",
+            "Security",
+        ),
+        "send_notification.duration_ms": (
+            "Email Report Delivery",
+            "Generated and sent the version assessment email report.",
+            "Notification",
+        ),
+    }
+    return mapping.get(metric, ("Workflow Step", "Recorded a workflow processing step.", "System"))
+
+
+def build_performance_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if metrics_df.empty:
+        return pd.DataFrame()
+    for _, item in metrics_df.tail(50).iterrows():
+        labels = item.get("labels", {})
+        if not isinstance(labels, dict):
+            labels = {}
+        stage, purpose, category = performance_event(str(item.get("metric", "")))
+        rows.append(
+            {
+                "Stage": stage,
+                "Category": category,
+                "Status": str(labels.get("status", "ok")).title(),
+                "Duration": format_duration_ms(item.get("value")),
+                "Items Processed": str(labels.get("total", "Not applicable")),
+                "Completed At": format_ts(str(item.get("ts", ""))),
+                "Purpose": purpose,
+                "Trace ID": item.get("trace_id", ""),
+                "Technical Metric": item.get("metric", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_workflow(metrics_df: pd.DataFrame) -> None:
+    section_title("Workflow Monitor", "Pipeline execution stages and processing duration.")
+    nodes = [
+        ("Supervisor Agent", "Routes request"),
+        ("Discovery Agent", "Inventory collection"),
+        ("Research Agent", "Latest versions"),
+        ("Analysis Agent", "Version comparison"),
+        ("Security Agent", "CVE assessment"),
+        ("Reporting Agent", "Reports and email"),
+    ]
+    st.markdown(
+        '<div class="vm-flow">'
+        + "".join(
+            f'<div class="vm-node"><strong>{name}</strong><span>{summary}</span></div>'
+            for name, summary in nodes
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.subheader("Agent Output Summary")
+    agent_rows = [
+        {"Agent": "Discovery Agent", "Status": "Completed", "Output Summary": "Current software inventory loaded."},
+        {"Agent": "Research Agent", "Status": "Completed", "Output Summary": "Latest vendor release catalog generated."},
+        {"Agent": "Analysis Agent", "Status": "Completed", "Output Summary": "Version compliance and update status calculated."},
+        {"Agent": "Security Agent", "Status": "Completed", "Output Summary": "NVD vulnerability assessment completed."},
+        {"Agent": "Reporting Agent", "Status": "Completed", "Output Summary": "Excel, email preview, and notifications prepared."},
+    ]
+    st.dataframe(style_operational_table(pd.DataFrame(agent_rows)), use_container_width=True, hide_index=True)
+
+    st.subheader("Pipeline Performance")
+    performance_df = build_performance_metrics(metrics_df)
+    if performance_df.empty:
+        st.info("No workflow performance data found.")
+    else:
+        latest_trace = ""
+        if "Trace ID" in performance_df and not performance_df["Trace ID"].dropna().empty:
+            latest_trace = str(performance_df["Trace ID"].dropna().iloc[-1])
+        latest_run = performance_df[performance_df["Trace ID"] == latest_trace] if latest_trace else performance_df.tail(6)
+        display_cols = ["Stage", "Category", "Status", "Duration", "Items Processed", "Completed At", "Purpose"]
+        st.dataframe(style_operational_table(latest_run[display_cols]), use_container_width=True, hide_index=True)
+        with st.expander("Technical performance details"):
+            technical_cols = ["Completed At", "Technical Metric", "Trace ID", "Status", "Duration"]
+            st.dataframe(performance_df[technical_cols].tail(20), use_container_width=True, hide_index=True)
+
+
+def render_cache(cache_metrics: dict[str, Any]) -> None:
+    section_title("Cache Analytics", "Operational cache utilization, API reduction, and token savings.")
+    namespaces = {key: val for key, val in cache_metrics.items() if isinstance(val, dict)}
+    rows = []
+    for namespace, record in namespaces.items():
+        hits = int(record.get("hits", 0))
+        misses = int(record.get("misses", 0))
+        total = hits + misses
+        rows.append(
+            {
+                "Namespace": namespace,
+                "Cache Area": CACHE_NAMESPACE_LABELS.get(namespace, namespace.replace("_", " ").title()),
+                "Cache Hits": hits,
+                "Cache Misses": misses,
+                "Hit Ratio": round((hits / total) * 100, 1) if total else 0,
+                "API Calls Saved": int(record.get("estimated_api_calls_saved", 0)),
+                "Estimated Token Savings": int(record.get("estimated_tokens_saved", 0)),
+                "Bypasses": int(record.get("bypasses", 0)),
+            }
+        )
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.info("No cache metrics available.")
+        return
+    primary_df = df[df["Namespace"].isin(PRIMARY_CACHE_NAMESPACES)].copy()
+    advanced_df = df[~df["Namespace"].isin(PRIMARY_CACHE_NAMESPACES)].copy()
+    if primary_df.empty:
+        primary_df = df.copy()
+
+    totals = primary_df[["Cache Hits", "Cache Misses", "API Calls Saved", "Estimated Token Savings"]].sum()
+    cols = st.columns(5)
+    cols[0].metric("Cache Hits", int(totals["Cache Hits"]))
+    cols[1].metric("Cache Misses", int(totals["Cache Misses"]))
+    total_requests = totals["Cache Hits"] + totals["Cache Misses"]
+    cols[2].metric("Hit Ratio", f"{round((totals['Cache Hits'] / total_requests) * 100, 1) if total_requests else 0}%")
+    cols[3].metric("API Calls Saved", int(totals["API Calls Saved"]))
+    cols[4].metric("Token Savings", int(totals["Estimated Token Savings"]))
+
+    display_cols = ["Cache Area", "Cache Hits", "Cache Misses", "Hit Ratio", "API Calls Saved", "Estimated Token Savings", "Bypasses"]
+    st.dataframe(primary_df[display_cols], use_container_width=True, hide_index=True)
+    left, right = st.columns(2)
+    with left:
+        bar_chart(primary_df, "Cache Area", "Hit Ratio", "Cache Efficiency", "Cache Area")
+    with right:
+        bar_chart(primary_df, "Cache Area", "API Calls Saved", "API Calls Avoided", "Cache Area")
+
+    if not advanced_df.empty:
+        with st.expander("Advanced cache details"):
+            st.caption("Internal cache layers used for troubleshooting vendor search, LLM parsing, and direct source fetches.")
+            st.dataframe(advanced_df[display_cols], use_container_width=True, hide_index=True)
+
+
+def render_reports(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame) -> None:
+    section_title("Reports", "Management and technical deliverables for review, download, and email distribution.")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Applications", len(current_df))
+    col2.metric("Updates Required", int((comparison_df["Need Update"] == "Yes").sum()) if not comparison_df.empty else 0)
+    col3.metric("Security Findings", int(vuln_df["CVE Count"].sum()) if not vuln_df.empty else 0)
+
+    st.subheader("Report Package")
+    mime_by_name = {
+        EMAIL_HTML_FILE.name: "text/html",
+        EXCEL_FILE.name: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        TESTCASE_IMPACT_EXCEL_FILE.name: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        PACKAGE_READINESS_FILE.name: "application/json",
+        QA_VALIDATION_FILE.name: "application/json",
+        TESTCASE_IMPACT_FILE.name: "application/json",
+    }
+    files = [
+        (label, path, mime_by_name.get(path.name, "application/octet-stream"))
+        for label, path in visible_output_files_for_role(current_role(), include_operational_reports=False)
+    ]
+    cols = st.columns(min(len(files), 4))
+    for col, (label, path, mime) in zip(cols, files):
+        with col:
+            st.markdown(f"**{label}**")
+            if "Technical" in label:
+                st.caption("Detailed versions, CVE severity, risk, recommendations, and scan evidence.")
+            elif "Package" in label:
+                st.caption("Release engineering readiness, checklist, owner, installer type, and blockers.")
+            elif "QA" in label:
+                st.caption("Compatibility, installation validation, functional checks, and QA test notes.")
+            elif "Test Case" in label:
+                st.caption("Recommended QA regression and validation test cases for software requiring updates.")
+            else:
+                st.caption("Executive summary for managers, stakeholders, and email distribution.")
+            st.caption(path.name)
+            if path.exists():
+                st.download_button(f"Download {label}", path.read_bytes(), file_name=path.name, mime=mime, use_container_width=True)
+            else:
+                st.warning("Not available")
+
+    st.subheader("Management Report Preview")
+    st.caption("This is the business-focused report body used for email notifications.")
+    html = load_file_text(str(EMAIL_HTML_FILE), file_mtime(EMAIL_HTML_FILE))
+    if html:
+        components.html(html, height=760, scrolling=True)
+    else:
+        st.info("No HTML email preview found.")
+
+
+def friendly_event(metric: str) -> tuple[str, str, str]:
+    mapping = {
+        "fetch_latest_versions.duration_ms": (
+            "Latest versions refreshed",
+            "The system checked the latest approved vendor versions.",
+            "Version Catalog",
+        ),
+        "fetch_current_versions.duration_ms": (
+            "Current inventory refreshed",
+            "The system collected installed versions from servers or fallback documents.",
+            "Inventory",
+        ),
+        "compare_versions.duration_ms": (
+            "Version comparison completed",
+            "Installed versions were compared against the latest-version catalog.",
+            "Compliance",
+        ),
+        "check_vulnerabilities.duration_ms": (
+            "Vulnerability assessment completed",
+            "Current installed versions were checked against vulnerability data.",
+            "Security",
+        ),
+        "send_notification.duration_ms": (
+            "Email notification processed",
+            "The version assessment report email was generated and sent using configured mail settings.",
+            "Notification",
+        ),
+    }
+    return mapping.get(metric, ("Workflow event recorded", "A system workflow event was recorded.", "System"))
+
+
+def format_duration_ms(raw: Any) -> str:
+    try:
+        value_ms = float(raw)
+    except (TypeError, ValueError):
+        return "Not available"
+    if value_ms < 1000:
+        return f"{value_ms:.0f} ms"
+    return f"{value_ms / 1000:.1f} sec"
+
+
+def build_audit_events(metrics_df: pd.DataFrame, cache_metrics: dict[str, Any]) -> pd.DataFrame:
+    rows = []
+    if not metrics_df.empty:
+        for _, item in metrics_df.tail(100).iterrows():
+            labels = item.get("labels", {})
+            if not isinstance(labels, dict):
+                labels = {}
+            title, description, category = friendly_event(str(item.get("metric", "")))
+            rows.append(
+                {
+                    "Timestamp": format_ts(str(item.get("ts", ""))),
+                    "Category": category,
+                    "Activity": title,
+                    "Status": str(labels.get("status", "ok")).title(),
+                    "Duration": format_duration_ms(item.get("value")),
+                    "Details": description,
+                    "Trace ID": item.get("trace_id", ""),
+                    "Technical Event": item.get("metric", ""),
+                }
+            )
+
+    cache_updated = format_ts(cache_metrics.get("last_updated")) if cache_metrics else "Not available"
+    for namespace, record in cache_metrics.items():
+        if isinstance(record, dict):
+            hits = int(record.get("hits", 0))
+            misses = int(record.get("misses", 0))
+            saved = int(record.get("estimated_api_calls_saved", 0))
+            rows.append(
+                {
+                    "Timestamp": cache_updated,
+                    "Category": "Cache",
+                    "Activity": f"{namespace.replace('_', ' ').title()} cache updated",
+                    "Status": "Ok",
+                    "Duration": "Not applicable",
+                    "Details": f"{hits} cache hits, {misses} misses, {saved} API calls saved.",
+                    "Trace ID": "",
+                    "Technical Event": namespace,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def render_audit(metrics_df: pd.DataFrame, cache_metrics: dict[str, Any]) -> None:
+    section_title("Activity History", "Readable operational history for scans, reports, cache usage, and notifications.")
+    df = build_audit_events(metrics_df, cache_metrics)
+    if df.empty:
+        st.info("No activity history is available yet. Run the pipeline to create workflow events.")
+        return
+
+    total_events = len(df)
+    successful = int((df["Status"].str.upper() == "OK").sum())
+    cache_events = int((df["Category"] == "Cache").sum())
+    last_event = df["Timestamp"].iloc[-1] if not df.empty else "Not available"
+    cols = st.columns(4)
+    cols[0].metric("Activities Recorded", total_events)
+    cols[1].metric("Successful Events", successful)
+    cols[2].metric("Cache Events", cache_events)
+    cols[3].metric("Latest Activity", last_event)
+
+    display_cols = ["Timestamp", "Category", "Activity", "Status", "Duration", "Details"]
+    searchable_table(df[display_cols], "activity_history", ["Category", "Status"])
+
+    with st.expander("Technical audit details"):
+        technical_cols = ["Timestamp", "Technical Event", "Trace ID", "Status", "Duration"]
+        st.dataframe(df[technical_cols], use_container_width=True, hide_index=True)
+
+
+def render_settings(config: dict[str, Any]) -> None:
+    if not can_manage_settings():
+        render_access_denied("Admin")
+        return
+
+    section_title("Settings", "Runtime controls and integration status.")
+    cache_config = config.get("cache", {})
+    vuln_config = config.get("vulnerability", {})
+    smtp_config = config.get("smtp", {})
+
+    col1, col2 = st.columns(2)
+    with col1:
+        force_refresh = st.toggle(
+            "Get Fresh Data",
+            value=False,
+            help="Turn on to bypass cached results and retrieve fresh vendor and vulnerability data. Leave off to use cache when valid.",
+        )
+        email_enabled = st.toggle("Enable Email Notifications", value=bool(smtp_config.get("server")), help="Requires SMTP configuration.")
+        st.markdown(
+            f"""
+            <div class="vm-card">
+                <strong>Runtime Mode</strong><br>
+                <div class="vm-posture-note">Data refresh mode: {"Fresh data requested" if force_refresh else "Cache enabled"}</div>
+                <div class="vm-posture-note">Email notifications: {"Enabled" if email_enabled else "Disabled"}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col2:
+        software_ttl_days = int(cache_config.get("software_versions_ttl_seconds", 604800) / 86400)
+        vuln_ttl_hours = int(cache_config.get("vulnerabilities_ttl_seconds", 86400) / 3600)
+        st.number_input("Software Versions TTL - Days", min_value=1, max_value=30, value=software_ttl_days)
+        st.number_input("Vulnerability TTL - Hours", min_value=1, max_value=168, value=vuln_ttl_hours)
+        st.caption("Configuration values shown here reflect the active project settings.")
+
+    st.subheader("Integration Status")
+    status_rows = [
+        {"Integration": "NVD API", "Status": "Configured" if vuln_config.get("nvd_api_key") else "Missing", "Details": "Vulnerability CVE source"},
+        {"Integration": "SMTP", "Status": "Configured" if smtp_config.get("server") else "Missing", "Details": "Email notification delivery"},
+        {"Integration": "Cache", "Status": "Enabled" if cache_config.get("enabled", True) else "Disabled", "Details": cache_config.get("backend", "json")},
+    ]
+    st.dataframe(style_operational_table(pd.DataFrame(status_rows)), use_container_width=True, hide_index=True)
+
+    st.subheader("Access Control")
+    st.caption("Administrator manages settings and users. Release Engineer prepares assessments and reports. QA Engineer validates deployments without security/CVE views.")
+    user_rows = [
+        {
+            "User": user["username"],
+            "Display Name": user.get("display_name", user["username"]),
+            "Role": user["role"],
+            "Can Run Scans": "Yes" if user["role"] in ACTION_ROLES else "No",
+            "Can Manage Settings": "Yes" if user["role"] in ADMIN_ROLES else "No",
+        }
+        for user in configured_users(config)
+    ]
+    st.dataframe(style_operational_table(pd.DataFrame(user_rows)), use_container_width=True, hide_index=True)
+
+
+def main() -> None:
+    inject_css()
+    config = load_json(str(CONFIG_FILE), file_mtime(CONFIG_FILE))
+    if not require_login(config):
+        return
+    sync_background_schedule_from_config(config)
+
+    current = load_json(str(CURRENT_FILE), file_mtime(CURRENT_FILE))
+    latest = load_json(str(LATEST_FILE), file_mtime(LATEST_FILE))
+    comparison = load_json(str(COMPARISON_FILE), file_mtime(COMPARISON_FILE))
+    vulnerabilities = load_json(str(VULNERABILITY_FILE), file_mtime(VULNERABILITY_FILE))
+    cache_metrics = load_json(str(CACHE_METRICS_FILE), file_mtime(CACHE_METRICS_FILE))
+    metrics_df = load_metrics(str(METRICS_FILE), file_mtime(METRICS_FILE))
+
+    current_df = normalize_current(current)
+    latest_df = normalize_latest(latest)
+    comparison_df = normalize_comparison(comparison, vulnerabilities)
+    vuln_df = normalize_vulnerabilities(vulnerabilities)
+    vendor_requirements = load_vendor_compatibility_requirements(comparison, latest) if comparison and latest else {}
+    package_readiness, qa_validation = ensure_workspace_outputs(comparison, latest, vulnerabilities, vendor_requirements)
+    readiness_df = normalize_package_readiness(package_readiness)
+    qa_df = normalize_qa_validation(qa_validation)
+
+    workflow_status = "Completed" if not comparison_df.empty else "Not Run"
+    last_scan = last_scan_time(latest, vulnerabilities)
+    page = render_sidebar(config, workflow_status, last_scan)
+    render_app_header(page, workflow_status, last_scan)
+
+    if page == "Dashboard":
+        render_dashboard(current_df, comparison_df, vuln_df, metrics_df)
+    elif page == "Operations":
+        render_operations(config)
+    elif page == "Software Inventory":
+        render_inventory(current_df)
+    elif page == "Latest Versions":
+        render_latest(latest_df)
+    elif page == "Version Comparison":
+        render_comparison(comparison_df)
+    elif page == "Package Readiness":
+        render_package_readiness(readiness_df)
+    elif page == "Compatibility Check":
+        render_compatibility_check(qa_df)
+    elif page == "QA Validation":
+        render_qa_validation(qa_df)
+    elif page == "Vulnerability Assessment":
+        render_vulnerabilities(vuln_df)
+    elif page == "Workflow Monitor":
+        render_workflow(metrics_df)
+    elif page == "Cache Analytics":
+        render_cache(cache_metrics)
+    elif page == "Reports":
+        render_reports(current_df, comparison_df, vuln_df)
+    elif page == "Audit Logs":
+        render_audit(metrics_df, cache_metrics)
+    elif page == "Settings":
+        render_settings(config)
+
+
+if __name__ == "__main__":
+    main()

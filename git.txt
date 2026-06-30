@@ -1,0 +1,18 @@
+To add this project to Git and push it to GitHub/GitLab/etc., run these from:
+cd D:\Project\Latest\VersionManagerAPP
+Initialize Git:
+git init
+Check files:
+git status
+Add files:
+git add .
+Commit:
+git commit -m "Initial Version Manager app"
+Add your remote repo URL:
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+Push:
+git branch -M main
+git push -u origin main
+Important: your project has .env and config.json, which may contain passwords/API keys. Make sure they are in .gitignore before git add ., or remove secrets first.
+
+Monday 11:17 PM

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "VersionManagerServer": {
+      "command": "python",
+      "args": [
+        "-u",
+        "D:\\Project\\Latest\\New\\VersionManager\\mcp_server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "D:\\Project\\Latest\\New\\VersionManager"
+      }
+    }
+  }
+}
