@@ -56,11 +56,17 @@ def list_teams() -> list[str]:
     teams = set()
     teams_dir = INPUT_DIR / "teams"
     if teams_dir.exists():
-        teams.update(
-            path.name
-            for path in teams_dir.iterdir()
-            if path.is_dir() and (path / "software.yml").exists()
-        )
+        for path in teams_dir.iterdir():
+            if not path.is_dir():
+                continue
+            has_working_input = (path / "software.yml").exists()
+            releases_dir = path / "releases"
+            has_release_input = releases_dir.exists() and any(
+                release_path.is_dir() and (release_path / "software.yml").exists()
+                for release_path in releases_dir.iterdir()
+            )
+            if has_working_input or has_release_input:
+                teams.add(path.name)
     if not teams and (INPUT_DIR / "software.yml").exists():
         teams.add(DEFAULT_TEAM_LABEL)
     return sorted(teams)
