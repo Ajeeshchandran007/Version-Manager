@@ -933,6 +933,15 @@ def create_release_snapshot(release_name: str, base_release: str, config: dict[s
             shutil.copytree(item, destination, dirs_exist_ok=True)
         else:
             shutil.copy2(item, destination)
+
+    source_output_root = team_workspace_output_dir(team) if base_release == CURRENT_RELEASE_LABEL else release_output_dir(base_release, team)
+    if source_output_root.exists():
+        for item in source_output_root.iterdir():
+            destination = output_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, destination, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, destination)
     st.session_state["active_team"] = team
     st.session_state["active_release"] = release
     return True, f"Release {release} created for {team} from {base_release}."
