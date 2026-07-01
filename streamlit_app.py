@@ -67,7 +67,7 @@ EMAIL_HTML_FILE = OUTPUT_DIR / "email_preview.html"
 EMAIL_TEXT_FILE = OUTPUT_DIR / "email_preview.txt"
 
 CURRENT_RELEASE_LABEL = "Current"
-CURRENT_RELEASE_DISPLAY_LABEL = "Working / Latest"
+CURRENT_RELEASE_DISPLAY_LABEL = "Pre-Release Work"
 DEFAULT_TEAM_LABEL = "Default"
 RELEASE_OUTPUT_KEYS = {
     "latest_version_json": "latest_versions.json",
@@ -2737,7 +2737,7 @@ def release_summary_rows(team: str) -> list[dict[str, Any]]:
 
 
 def render_release_workspace(config: dict[str, Any]) -> None:
-    section_title("Release Workspace", "Select team context, create release snapshots, and manage release-specific assessment outputs.")
+    section_title("Release Workspace", "Select team context, freeze pre-release work, and manage release-specific assessment outputs.")
 
     render_context_selector("release_workspace")
     selected_team = active_team_name()
@@ -2775,7 +2775,8 @@ def render_release_workspace(config: dict[str, Any]) -> None:
                     st.error(message)
 
     if can_run_operations():
-        st.subheader("Create Release Snapshot")
+        st.subheader("Freeze Pre-Release Work as Release")
+        st.caption("Use this after package readiness and QA validation are complete enough to save a release baseline.")
         form_cols = st.columns([1, 1, 1])
         with form_cols[0]:
             new_release = st.text_input("New Release Name", placeholder="7.2.11")
@@ -2786,22 +2787,59 @@ def render_release_workspace(config: dict[str, Any]) -> None:
         with form_cols[2]:
             st.write("")
             st.write("")
-            create_clicked = st.button("Create Snapshot", type="primary", use_container_width=True)
+            create_clicked = st.button("Freeze as Release", type="primary", use_container_width=True)
         if create_clicked:
-            ok, message = create_release_snapshot(new_release, base_release, config, selected_team)
-            if ok:
-                clear_dashboard_cache()
-                st.success(message)
-                st.rerun()
+            release_to_create = release_name_to_path_name(new_release)
+            if not release_to_create:
+                st.error("Enter a release name such as 7.2.11.")
             else:
-                st.error(message)
+                st.session_state["pending_release_freeze"] = {
+                    "team": selected_team,
+                    "release": release_to_create,
+                    "base_release": base_release,
+                }
+
+        pending_freeze = st.session_state.get("pending_release_freeze")
+        if pending_freeze:
+            team = pending_freeze["team"]
+            release = pending_freeze["release"]
+            base_release = pending_freeze["base_release"]
+            target_path = release_root(release, team)
+            st.warning(
+                "You are about to freeze the current team work into a release baseline. "
+                "Use this only after package readiness and QA validation are complete enough for release tracking."
+            )
+            st.markdown(
+                f"""
+                **Current work area:** `{team} / {release_display_label(base_release)}`
+
+                **New release:** `{team} / {release}`
+
+                **Release folder:** `{target_path}`
+                """
+            )
+            confirm_cols = st.columns(2)
+            with confirm_cols[0]:
+                if st.button("Cancel", use_container_width=True):
+                    st.session_state.pop("pending_release_freeze", None)
+                    st.rerun()
+            with confirm_cols[1]:
+                if st.button("Confirm Freeze as Release", type="primary", use_container_width=True):
+                    ok, message = create_release_snapshot(release, base_release, config, team)
+                    st.session_state.pop("pending_release_freeze", None)
+                    if ok:
+                        clear_dashboard_cache()
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
 
     rows = release_summary_rows(active_team_name())
     st.subheader("Release Baselines")
     if rows:
         searchable_table(pd.DataFrame(rows), "release_workspace_summary", ["Release"])
     else:
-        st.info("No release snapshots found for this team yet.")
+        st.info("No release baselines found for this team yet.")
 
 
 def render_context_selector(location: str = "dashboard") -> None:
@@ -2922,7 +2960,7 @@ def render_release_comparison() -> None:
     )
     releases = [CURRENT_RELEASE_LABEL, *list_releases(selected_team)]
     if len(releases) < 2:
-        st.info(f"Create at least one release snapshot to compare it with {CURRENT_RELEASE_DISPLAY_LABEL}.")
+        st.info(f"Create at least one release baseline to compare it with {CURRENT_RELEASE_DISPLAY_LABEL}.")
         return
 
     col1, col2 = st.columns(2)
