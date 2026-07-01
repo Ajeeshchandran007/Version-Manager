@@ -426,6 +426,82 @@ def render_release_workspace(config: dict[str, Any], ctx: Any) -> None:
         st.info("No release baselines found for this team yet.")
 
 
+def release_freeze_status(
+    comparison_df: pd.DataFrame,
+    readiness_df: pd.DataFrame,
+    qa_df: pd.DataFrame,
+    ctx: Any,
+) -> dict[str, Any]:
+    blocked_packages = int((readiness_df.get("Package Readiness", pd.Series(dtype=str)) == "Blocked").sum()) if not readiness_df.empty else 0
+    failed_tests = int((qa_df.get("Test Result", pd.Series(dtype=str)) == "FAIL").sum()) if not qa_df.empty else 0
+    not_tested = int((qa_df.get("Test Result", pd.Series(dtype=str)) == "NOT TESTED").sum()) if not qa_df.empty else 0
+    source_review = int((comparison_df.get("Status", pd.Series(dtype=str)) == "Source Review").sum()) if not comparison_df.empty else 0
+    test_plan = active_output_path("Test_Case_Impact_Assessment.xlsx")
+
+    gates = [
+        {
+            "Gate": "Release Package Review",
+            "Owner": "Release Engineer",
+            "Status": "Ready" if not readiness_df.empty and blocked_packages == 0 else "Action Required",
+            "Evidence": f"{len(readiness_df)} package record(s); {blocked_packages} blocked item(s)",
+        },
+        {
+            "Gate": "QA Validation",
+            "Owner": "QA Engineer",
+            "Status": "Ready" if not qa_df.empty and failed_tests == 0 and not_tested == 0 else "Action Required",
+            "Evidence": f"{len(qa_df)} QA record(s); {failed_tests} failed, {not_tested} not tested",
+        },
+        {
+            "Gate": "Version Source Review",
+            "Owner": "Release Engineer",
+            "Status": "Ready" if source_review == 0 else "Action Required",
+            "Evidence": f"{source_review} source-review item(s)",
+        },
+        {
+            "Gate": "Recommended Test Plan",
+            "Owner": "QA Engineer",
+            "Status": "Ready" if test_plan.exists() else "Action Required",
+            "Evidence": str(test_plan),
+        },
+    ]
+    ready = all(gate["Status"] == "Ready" for gate in gates)
+    return {
+        "ready": ready,
+        "summary": "Ready to Freeze" if ready else "Not Ready to Freeze",
+        "gates": gates,
+    }
+
+
+def render_release_freeze_status(
+    comparison_df: pd.DataFrame,
+    readiness_df: pd.DataFrame,
+    qa_df: pd.DataFrame,
+    ctx: Any,
+) -> None:
+    ctx.section_title("Release Freeze Status", "Shared release gate for Release Engineering and QA validation readiness.")
+    render_context_selector(ctx, "release_freeze_status")
+    status = release_freeze_status(comparison_df, readiness_df, qa_df, ctx)
+
+    cols = st.columns(4)
+    cols[0].metric("Team", active_team_name())
+    cols[1].metric("Release Context", release_display_label(active_release_name()))
+    cols[2].metric("Freeze Status", status["summary"])
+    cols[3].metric("Open Gates", len([gate for gate in status["gates"] if gate["Status"] != "Ready"]))
+
+    if status["ready"]:
+        st.success("This release context is ready to freeze. Admin or Release Engineer can freeze it from Release Workspace.")
+    else:
+        st.warning("This release context is not ready to freeze. Complete the action-required gates below.")
+
+    gate_df = pd.DataFrame(status["gates"])
+    ctx.searchable_table(gate_df, "release_freeze_status", ["Owner", "Status"])
+
+    action_rows = [gate for gate in status["gates"] if gate["Status"] != "Ready"]
+    if action_rows:
+        st.subheader("Open Actions")
+        st.dataframe(ctx.style_operational_table(pd.DataFrame(action_rows)), use_container_width=True, hide_index=True)
+
+
 def render_reports(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, ctx: Any) -> None:
     ctx.section_title("Reports", "Management and technical deliverables for review, download, and email distribution.")
     col1, col2, col3 = st.columns(3)

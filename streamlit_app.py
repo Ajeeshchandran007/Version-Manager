@@ -99,6 +99,7 @@ ADMIN_ROLES = {ROLE_ADMIN}
 BASE_PAGES = [
     "Dashboard",
     "Release Workspace",
+    "Release Freeze Status",
     "Software Inventory",
     "Latest Versions",
     "Version Comparison",
@@ -2067,6 +2068,10 @@ def render_release_workspace(config: dict[str, Any]) -> None:
     app_pages.render_release_workspace(config, page_context())
 
 
+def render_release_freeze_status(comparison_df: pd.DataFrame, readiness_df: pd.DataFrame, qa_df: pd.DataFrame) -> None:
+    app_pages.render_release_freeze_status(comparison_df, readiness_df, qa_df, page_context())
+
+
 def render_context_selector(location: str = "dashboard") -> None:
     app_pages.render_context_selector(page_context(), location)
 
@@ -2787,6 +2792,8 @@ def main() -> None:
         render_dashboard_page(current_df, comparison_df, vuln_df, metrics_df)
     elif page == "Release Workspace":
         render_release_workspace(base_config)
+    elif page == "Release Freeze Status":
+        render_release_freeze_status(comparison_df, readiness_df, qa_df)
     elif page == "Operations":
         render_operations(config)
     elif page == "Software Inventory":
