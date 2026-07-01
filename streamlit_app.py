@@ -783,9 +783,23 @@ def list_teams() -> list[str]:
     return sorted(teams)
 
 
+def user_team_scope(user: dict[str, Any] | None = None) -> list[str]:
+    user = user or current_user()
+    return normalize_team_scope(user.get("team_scope"))
+
+
+def allowed_teams_for_user(user: dict[str, Any] | None = None) -> list[str]:
+    teams = allowed_teams_for_user()
+    scope = user_team_scope(user)
+    if "*" in scope or current_role() == ROLE_ADMIN:
+        return teams
+    allowed = [team for team in teams if team in scope]
+    return allowed or teams[:1]
+
+
 def active_team_name() -> str:
     team = st.session_state.get("active_team", DEFAULT_TEAM_LABEL)
-    teams = list_teams()
+    teams = allowed_teams_for_user()
     if team in teams:
         return team
     return teams[0] if teams else DEFAULT_TEAM_LABEL
@@ -1857,7 +1871,20 @@ def readable_cell_class(value: Any) -> str:
     return ""
 
 
-def configured_users(config: dict[str, Any]) -> list[dict[str, str]]:
+def normalize_team_scope(raw_scope: Any) -> list[str]:
+    if raw_scope in (None, "", []):
+        return ["*"]
+    if isinstance(raw_scope, str):
+        scope = [part.strip() for part in raw_scope.split(",")]
+    elif isinstance(raw_scope, list):
+        scope = [str(part).strip() for part in raw_scope]
+    else:
+        scope = [str(raw_scope).strip()]
+    cleaned = [team for team in scope if team]
+    return cleaned or ["*"]
+
+
+def configured_users(config: dict[str, Any]) -> list[dict[str, Any]]:
     users = config.get("users")
     if isinstance(users, list) and users:
         return [
@@ -1866,14 +1893,18 @@ def configured_users(config: dict[str, Any]) -> list[dict[str, str]]:
                 "password": str(user.get("password", "")),
                 "role": _normalize_role(user.get("role")),
                 "display_name": str(user.get("display_name") or user.get("username") or "").strip(),
+                "team_scope": normalize_team_scope(user.get("team_scope")),
             }
             for user in users
             if isinstance(user, dict) and user.get("username")
         ]
     return [
-        {"username": "admin", "password": "admin", "role": ROLE_ADMIN, "display_name": "Administrator"},
-        {"username": "release", "password": "release", "role": ROLE_RELEASE_ENGINEER, "display_name": "Release Engineer"},
-        {"username": "qa", "password": "qa", "role": ROLE_QA_ENGINEER, "display_name": "QA Engineer"},
+        {"username": "admin", "password": "admin", "role": ROLE_ADMIN, "display_name": "Administrator", "team_scope": ["*"]},
+        {"username": "sourceone", "password": "sourceone", "role": ROLE_RELEASE_ENGINEER, "display_name": "SourceOne Release", "team_scope": ["SourceOne"]},
+        {"username": "dps", "password": "dps", "role": ROLE_RELEASE_ENGINEER, "display_name": "DPS Release", "team_scope": ["DPS"]},
+        {"username": "avamar", "password": "avamar", "role": ROLE_RELEASE_ENGINEER, "display_name": "Avamar Release", "team_scope": ["Avamar"]},
+        {"username": "package", "password": "package", "role": ROLE_RELEASE_ENGINEER, "display_name": "Package Team", "team_scope": ["PackageTeam"]},
+        {"username": "qa", "password": "qa", "role": ROLE_QA_ENGINEER, "display_name": "QA Engineer", "team_scope": ["*"]},
     ]
 
 
@@ -1888,7 +1919,7 @@ def _normalize_role(role: Any) -> str:
     return ROLE_QA_ENGINEER
 
 
-def current_user() -> dict[str, str]:
+def current_user() -> dict[str, Any]:
     return st.session_state.get("vm_user") or {}
 
 
@@ -1930,6 +1961,7 @@ def _auth_secret(config: dict[str, Any]) -> bytes:
                     "username": user["username"],
                     "password": user["password"],
                     "role": user["role"],
+                    "team_scope": user.get("team_scope", ["*"]),
                 }
                 for user in configured_users(config)
             ],
@@ -1978,6 +2010,7 @@ def _decode_auth_token(token: str, config: dict[str, Any]) -> dict[str, str] | N
                 "username": user["username"],
                 "role": user["role"],
                 "display_name": user["display_name"] or user["username"],
+                "team_scope": user.get("team_scope", ["*"]),
             }
     return None
 
@@ -1998,6 +2031,10 @@ def _restore_user_from_auth_token(config: dict[str, Any]) -> bool:
         st.query_params.pop("vm_session", None)
         return False
     st.session_state["vm_user"] = user
+    scoped_teams = allowed_teams_for_user(user)
+    if len(scoped_teams) == 1:
+        st.session_state["active_team"] = scoped_teams[0]
+        st.session_state.setdefault("active_release", CURRENT_RELEASE_LABEL)
     return True
 
 
@@ -2018,7 +2055,7 @@ def _clear_user_session() -> None:
 def require_login(config: dict[str, Any]) -> bool:
     auth_cfg = config.get("auth", {})
     if auth_cfg.get("enabled", True) is False:
-        st.session_state.setdefault("vm_user", {"username": "local", "role": ROLE_ADMIN, "display_name": "Local Admin"})
+        st.session_state.setdefault("vm_user", {"username": "local", "role": ROLE_ADMIN, "display_name": "Local Admin", "team_scope": ["*"]})
         return True
     if current_user():
         return True
@@ -2056,8 +2093,13 @@ def require_login(config: dict[str, Any]) -> bool:
                             "username": user["username"],
                             "role": user["role"],
                             "display_name": user["display_name"] or user["username"],
+                            "team_scope": user.get("team_scope", ["*"]),
                         }
                         st.session_state["vm_user"] = authenticated_user
+                        scoped_teams = allowed_teams_for_user(authenticated_user)
+                        if len(scoped_teams) == 1:
+                            st.session_state["active_team"] = scoped_teams[0]
+                            st.session_state["active_release"] = CURRENT_RELEASE_LABEL
                         _persist_user_session(authenticated_user, config)
                         login_placeholder.empty()
                         return True
@@ -2569,12 +2611,16 @@ def render_operations(config: dict[str, Any]) -> None:
 
 def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, metrics_df: pd.DataFrame) -> None:
     role = current_role()
+    team = active_team_name()
+    release = active_release_name()
+    title_prefix = "Enterprise" if "*" in user_team_scope() and role == ROLE_ADMIN else team
+    subtitle_context = f"{team} / {release} release context"
     if role == ROLE_RELEASE_ENGINEER:
-        section_title("Release Engineering Dashboard", "Package readiness, version drift, upgrade planning, and security advisory visibility.")
+        section_title(f"{title_prefix} Release Dashboard", f"Package readiness, version drift, upgrade planning, and security visibility for {subtitle_context}.")
     elif role == ROLE_QA_ENGINEER:
-        section_title("QA Validation Dashboard", "Installation validation, compatibility review, version status, and report access.")
+        section_title(f"{title_prefix} QA Dashboard", f"Installation validation, compatibility review, version status, and report access for {subtitle_context}.")
     else:
-        section_title("Administrator Dashboard", "Operational posture, update exposure, security risk, and platform controls at a glance.")
+        section_title(f"{title_prefix} Administrator Dashboard", f"Operational posture, update exposure, security risk, and platform controls for {subtitle_context}.")
     total = len(current_df)
     updates = int((comparison_df["Need Update"] == "Yes").sum()) if not comparison_df.empty else 0
     up_to_date = max(total - updates, 0)
@@ -2665,7 +2711,7 @@ def release_summary_rows(team: str) -> list[dict[str, Any]]:
 def render_release_workspace(config: dict[str, Any]) -> None:
     section_title("Release Workspace", "Select team context, create release snapshots, and manage release-specific assessment outputs.")
 
-    teams = list_teams()
+    teams = allowed_teams_for_user()
     current_team = active_team_name()
     team_col, release_col = st.columns(2)
     with team_col:
@@ -2702,7 +2748,7 @@ def render_release_workspace(config: dict[str, Any]) -> None:
     st.markdown("**Active Paths**")
     st.code(f"Input:  {input_path}\nOutput: {output_path}", language="text")
 
-    if can_run_operations():
+    if can_manage_settings():
         with st.expander("+ Add New Team", expanded=False):
             st.caption("Use this only when the team/product stream is not already listed above.")
             team_cols = st.columns([1, 1])
@@ -2721,6 +2767,7 @@ def render_release_workspace(config: dict[str, Any]) -> None:
                 else:
                     st.error(message)
 
+    if can_run_operations():
         st.subheader("Create Release Snapshot")
         form_cols = st.columns([1, 1, 1])
         with form_cols[0]:
@@ -3457,6 +3504,7 @@ def render_settings(config: dict[str, Any]) -> None:
             "User": user["username"],
             "Display Name": user.get("display_name", user["username"]),
             "Role": user["role"],
+            "Team Scope": ", ".join(user.get("team_scope", ["*"])),
             "Can Run Scans": "Yes" if user["role"] in ACTION_ROLES else "No",
             "Can Manage Settings": "Yes" if user["role"] in ADMIN_ROLES else "No",
         }

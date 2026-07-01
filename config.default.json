@@ -53,19 +53,43 @@
       "username": "admin",
       "password": "admin",
       "role": "Admin",
-      "display_name": "Administrator"
+      "display_name": "Administrator",
+      "team_scope": ["*"]
     },
     {
-      "username": "release",
-      "password": "release",
+      "username": "sourceone",
+      "password": "sourceone",
       "role": "Release Engineer",
-      "display_name": "Release Engineer"
+      "display_name": "SourceOne Release",
+      "team_scope": ["SourceOne"]
+    },
+    {
+      "username": "dps",
+      "password": "dps",
+      "role": "Release Engineer",
+      "display_name": "DPS Release",
+      "team_scope": ["DPS"]
+    },
+    {
+      "username": "avamar",
+      "password": "avamar",
+      "role": "Release Engineer",
+      "display_name": "Avamar Release",
+      "team_scope": ["Avamar"]
+    },
+    {
+      "username": "package",
+      "password": "package",
+      "role": "Release Engineer",
+      "display_name": "Package Team",
+      "team_scope": ["PackageTeam"]
     },
     {
       "username": "qa",
       "password": "qa",
       "role": "QA Engineer",
-      "display_name": "QA Engineer"
+      "display_name": "QA Engineer",
+      "team_scope": ["*"]
     }
   ],
   "servers": {

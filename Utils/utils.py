@@ -127,7 +127,7 @@ def load_config():
     config_path = _CONFIG_PATH
     try:
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, 'r', encoding="utf-8-sig") as f:
                 config = json.load(f)
         except FileNotFoundError:
             config = _load_streamlit_secrets_config() or _load_default_config()
