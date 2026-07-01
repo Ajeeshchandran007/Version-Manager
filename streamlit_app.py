@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,7 +42,9 @@ from mcp_server import _load_json, _resolve_current_version, _save_json, _vulner
 
 
 BASE_DIR = Path(__file__).resolve().parent
+INPUT_DIR = BASE_DIR / "Input"
 OUTPUT_DIR = BASE_DIR / "output"
+RELEASES_DIR = BASE_DIR / "releases"
 CACHE_DIR = OUTPUT_DIR / "cache"
 
 CURRENT_FILE = OUTPUT_DIR / "current_versions.json"
@@ -61,6 +64,19 @@ EXCEL_FILE = OUTPUT_DIR / "Software_Version_Assessment.xlsx"
 EMAIL_HTML_FILE = OUTPUT_DIR / "email_preview.html"
 EMAIL_TEXT_FILE = OUTPUT_DIR / "email_preview.txt"
 
+CURRENT_RELEASE_LABEL = "Current"
+RELEASE_OUTPUT_KEYS = {
+    "latest_version_json": "latest_versions.json",
+    "current_version_json": "current_versions.json",
+    "comparison_report_json": "comparison_report.json",
+    "vulnerability_report_json": "vulnerability_report.json",
+    "package_readiness_json": "package_readiness.json",
+    "qa_validation_json": "qa_validation.json",
+    "testcase_impact_json": "testcase_impact.json",
+    "testcase_impact_xlsx": "Test_Case_Impact_Assessment.xlsx",
+    "excel_assessment": "Software_Version_Assessment.xlsx",
+}
+
 ROLE_ADMIN = "Admin"
 ROLE_RELEASE_ENGINEER = "Release Engineer"
 ROLE_QA_ENGINEER = "QA Engineer"
@@ -76,7 +92,7 @@ BASE_PAGES = [
     "Reports",
 ]
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
-RELEASE_PAGES = ["Package Readiness"]
+RELEASE_PAGES = ["Release Comparison", "Package Readiness"]
 QA_PAGES = ["QA Validation"]
 ADMIN_PAGES = ["Audit Logs", "Settings"]
 
@@ -669,15 +685,17 @@ def save_qa_manual_update(
     tested_by: str,
     evidence_file: Any | None,
 ) -> dict[str, Any]:
-    data = load_json(str(QA_VALIDATION_FILE), file_mtime(QA_VALIDATION_FILE))
+    qa_file = active_output_path("qa_validation.json")
+    evidence_dir = qa_file.parent / "qa_evidence"
+    data = load_json(str(qa_file), file_mtime(qa_file))
     if software_name not in data:
         raise ValueError(f"QA record not found for {software_name}")
 
     evidence_path = ""
     if evidence_file is not None:
-        QA_EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
         safe_name = "".join(ch if ch.isalnum() or ch in {".", "-", "_"} else "_" for ch in evidence_file.name)
-        target = QA_EVIDENCE_DIR / f"{software_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
+        target = evidence_dir / f"{software_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
         target.write_bytes(evidence_file.getbuffer())
         evidence_path = str(target)
 
@@ -705,7 +723,8 @@ def save_qa_manual_update(
     elif test_result == "FAIL":
         record["Functional Validation"] = {key: False for key in checks} if checks else {}
 
-    QA_VALIDATION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    qa_file.parent.mkdir(parents=True, exist_ok=True)
+    qa_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     clear_dashboard_cache()
     return record
 
@@ -721,9 +740,101 @@ def run_async(coro: Any) -> Any:
             loop.close()
 
 
+def project_path(config_path: str | Path) -> Path:
+    path = Path(config_path)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def release_name_to_path_name(name: str) -> str:
+    cleaned = str(name or "").strip()
+    cleaned = cleaned.replace("\\", "-").replace("/", "-")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", cleaned).strip(".-_")
+    return cleaned
+
+
+def list_releases() -> list[str]:
+    if not RELEASES_DIR.exists():
+        return []
+    return sorted(
+        path.name
+        for path in RELEASES_DIR.iterdir()
+        if path.is_dir() and (path / "input" / "software.yml").exists()
+    )
+
+
+def active_release_name() -> str:
+    release = st.session_state.get("active_release", CURRENT_RELEASE_LABEL)
+    return release if release == CURRENT_RELEASE_LABEL or release in list_releases() else CURRENT_RELEASE_LABEL
+
+
+def release_root(release: str) -> Path:
+    return RELEASES_DIR / release_name_to_path_name(release)
+
+
+def relpath(path: Path) -> str:
+    return path.relative_to(BASE_DIR).as_posix()
+
+
+def release_output_dir(release: str) -> Path:
+    return release_root(release) / "output"
+
+
+def active_output_path(filename: str) -> Path:
+    release = active_release_name()
+    if release == CURRENT_RELEASE_LABEL:
+        return OUTPUT_DIR / filename
+    return release_output_dir(release) / filename
+
+
+def active_config(config: dict[str, Any]) -> dict[str, Any]:
+    release = active_release_name()
+    if release == CURRENT_RELEASE_LABEL:
+        return config
+    scoped = json.loads(json.dumps(config))
+    root = release_root(release)
+    scoped.setdefault("input_files", {})["software_yml"] = relpath(root / "input" / "software.yml")
+    output_files = scoped.setdefault("output_files", {})
+    for key, filename in RELEASE_OUTPUT_KEYS.items():
+        output_files[key] = relpath(root / "output" / filename)
+    return scoped
+
+
+def config_path_for_result(output_key: str) -> str:
+    config = active_config(load_config())
+    output_files = config.get("output_files", {})
+    if output_key in output_files:
+        return str(project_path(output_files[output_key]))
+    filename = RELEASE_OUTPUT_KEYS.get(output_key, "")
+    return str(active_output_path(filename)) if filename else ""
+
+
+def create_release_snapshot(release_name: str, base_release: str, config: dict[str, Any]) -> tuple[bool, str]:
+    release = release_name_to_path_name(release_name)
+    if not release:
+        return False, "Enter a release name such as 7.2.11."
+    target = release_root(release)
+    if target.exists():
+        return False, f"Release {release} already exists."
+
+    if base_release == CURRENT_RELEASE_LABEL:
+        source = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
+    else:
+        source = release_root(base_release) / "input" / "software.yml"
+    if not source.exists():
+        return False, f"Base software.yml was not found: {source}"
+
+    input_dir = target / "input"
+    output_dir = target / "output"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, input_dir / "software.yml")
+    st.session_state["active_release"] = release
+    return True, f"Release {release} created from {base_release}."
+
+
 def runtime_state() -> dict[str, Any]:
     return {
-        "config": load_config(),
+        "config": active_config(load_config()),
         "version_fetcher": VersionFetcher(),
         "pdf_reader": PDFReader(),
         "server_querier": ServerQuerier(),
@@ -930,12 +1041,12 @@ async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str,
         "total": len(comparison),
         "needs_update": updates,
         "unknown": [name for name, result in comparison.items() if result.get("unknown")],
-        "vulnerability_report": str(VULNERABILITY_FILE),
-        "package_readiness_report": str(PACKAGE_READINESS_FILE),
-        "qa_validation_report": str(QA_VALIDATION_FILE),
-        "testcase_impact_report": str(TESTCASE_IMPACT_FILE),
-        "testcase_impact_excel": str(TESTCASE_IMPACT_EXCEL_FILE),
-        "excel_assessment": excel.get("path", str(EXCEL_FILE)),
+        "vulnerability_report": config_path_for_result("vulnerability_report_json"),
+        "package_readiness_report": config_path_for_result("package_readiness_json"),
+        "qa_validation_report": config_path_for_result("qa_validation_json"),
+        "testcase_impact_report": config_path_for_result("testcase_impact_json"),
+        "testcase_impact_excel": config_path_for_result("testcase_impact_xlsx"),
+        "excel_assessment": excel.get("path", config_path_for_result("excel_assessment")),
         "vulnerabilities": vulnerabilities,
         "package_readiness": final_state.get("package_readiness_results", {}),
         "compatibility": final_state.get("compatibility_results", {}),
@@ -989,7 +1100,7 @@ async def trigger_fetch_current_versions(category: str) -> dict[str, Any]:
 
 
 def trigger_compare_versions() -> dict[str, Any]:
-    config = load_config()
+    config = active_config(load_config())
     latest = _load_json(config["output_files"]["latest_version_json"])
     current = _load_json(config["output_files"]["current_version_json"])
     comparison = compare(latest, current)
@@ -1005,7 +1116,7 @@ def trigger_compare_versions() -> dict[str, Any]:
 
 
 def trigger_send_report_email() -> dict[str, Any]:
-    config = load_config()
+    config = active_config(load_config())
     comparison = _load_json(config["output_files"]["comparison_report_json"])
     vulnerability_path = _vulnerability_path(config)
     vulnerabilities = _load_json(vulnerability_path) if Path(BASE_DIR / vulnerability_path).exists() else {}
@@ -1197,13 +1308,13 @@ def ensure_workspace_outputs(
     vulnerabilities: dict[str, Any],
     vendor_requirements: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    config = load_config()
+    config = active_config(load_config())
     readiness, qa_validation = save_workspace_outputs(
         comparison,
         latest,
         vulnerabilities,
-        str(PACKAGE_READINESS_FILE),
-        str(QA_VALIDATION_FILE),
+        str(project_path(config["output_files"].get("package_readiness_json", "output/package_readiness.json"))),
+        str(project_path(config["output_files"].get("qa_validation_json", "output/qa_validation.json"))),
         load_software_metadata(config["input_files"]["software_yml"], "ALL"),
         vendor_requirements,
     )
@@ -1211,8 +1322,8 @@ def ensure_workspace_outputs(
         save_testcase_impact_outputs(
             comparison,
             str((BASE_DIR / config["input_files"].get("testcase_repository_xlsx", "Input/testcaseRepository.xlsx")).resolve()),
-            str(TESTCASE_IMPACT_FILE),
-            str(TESTCASE_IMPACT_EXCEL_FILE),
+            str(project_path(config["output_files"].get("testcase_impact_json", "output/testcase_impact.json"))),
+            str(project_path(config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx"))),
         )
     return readiness, qa_validation
 
@@ -1251,7 +1362,7 @@ def load_vendor_compatibility_requirements(
 
 def normalize_current(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
-    fallback_scan_time = format_epoch_ts(file_mtime(CURRENT_FILE))
+    fallback_scan_time = format_epoch_ts(file_mtime(active_output_path("current_versions.json")))
     for name, record in data.items():
         rows.append(
             {
@@ -1690,9 +1801,11 @@ def prepare_email_report_files(
 ) -> tuple[str, str]:
     body = build_report(comparison, vulnerabilities or {})
     html_body = build_html_report(comparison, vulnerabilities or {})
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    EMAIL_TEXT_FILE.write_text(body, encoding="utf-8")
-    EMAIL_HTML_FILE.write_text(html_body, encoding="utf-8")
+    text_file = active_output_path("email_preview.txt")
+    html_file = active_output_path("email_preview.html")
+    text_file.parent.mkdir(parents=True, exist_ok=True)
+    text_file.write_text(body, encoding="utf-8")
+    html_file.write_text(html_body, encoding="utf-8")
     return body, html_body
 
 
@@ -1871,20 +1984,20 @@ def pages_for_role(role: str) -> list[str]:
 
 
 def visible_output_files_for_role(role: str, include_operational_reports: bool = True) -> list[tuple[str, Path]]:
-    files: list[tuple[str, Path]] = [("Management Report - HTML", EMAIL_HTML_FILE)]
+    files: list[tuple[str, Path]] = [("Management Report - HTML", active_output_path("email_preview.html"))]
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
-        files.append(("Technical Report - Excel", EXCEL_FILE))
+        files.append(("Technical Report - Excel", active_output_path("Software_Version_Assessment.xlsx")))
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
-        files.append(("Package Readiness Data", PACKAGE_READINESS_FILE))
+        files.append(("Package Readiness Data", active_output_path("package_readiness.json")))
     if role == ROLE_ADMIN:
-        files.append(("QA Validation Data", QA_VALIDATION_FILE))
+        files.append(("QA Validation Data", active_output_path("qa_validation.json")))
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
-        files.append(("Test Case Impact Plan", TESTCASE_IMPACT_EXCEL_FILE))
+        files.append(("Test Case Impact Plan", active_output_path("Test_Case_Impact_Assessment.xlsx")))
     if include_operational_reports and role == ROLE_ADMIN:
         files.extend([
-            ("Comparison Report", COMPARISON_FILE),
-            ("Vulnerability Report", VULNERABILITY_FILE),
-            ("Test Case Impact Data", TESTCASE_IMPACT_FILE),
+            ("Comparison Report", active_output_path("comparison_report.json")),
+            ("Vulnerability Report", active_output_path("vulnerability_report.json")),
+            ("Test Case Impact Data", active_output_path("testcase_impact.json")),
         ])
     return files
 
@@ -2051,6 +2164,33 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
         if st.button("Sign Out", use_container_width=True):
             _clear_user_session()
             st.rerun()
+        st.divider()
+        releases = list_releases()
+        release_options = [CURRENT_RELEASE_LABEL, *releases]
+        current_release = active_release_name()
+        selected_release = st.selectbox(
+            "Release",
+            release_options,
+            index=release_options.index(current_release) if current_release in release_options else 0,
+            help="Select Current for global reports, or a release baseline for release-specific outputs.",
+        )
+        if selected_release != st.session_state.get("active_release", CURRENT_RELEASE_LABEL):
+            st.session_state["active_release"] = selected_release
+            clear_dashboard_cache()
+            st.rerun()
+        if can_run_operations():
+            with st.expander("Create Release", expanded=False):
+                base_options = [CURRENT_RELEASE_LABEL, *releases]
+                new_release = st.text_input("Release Name", placeholder="7.2.11")
+                base_release = st.selectbox("Base From", base_options)
+                if st.button("Create Release Snapshot", use_container_width=True):
+                    ok, message = create_release_snapshot(new_release, base_release, config)
+                    if ok:
+                        clear_dashboard_cache()
+                        st.success(message)
+                        st.rerun()
+                    else:
+                        st.error(message)
         st.divider()
         pages = pages_for_role(current_role())
         if can_run_operations():
@@ -2461,6 +2601,107 @@ def render_package_readiness(readiness_df: pd.DataFrame) -> None:
     )
 
 
+def load_release_output(release: str, filename: str) -> dict[str, Any]:
+    if release == CURRENT_RELEASE_LABEL:
+        path = OUTPUT_DIR / filename
+    else:
+        path = release_output_dir(release) / filename
+    return load_json(str(path), file_mtime(path))
+
+
+def vulnerability_risk(record: dict[str, Any]) -> str:
+    return str(value(record, "risk_level", "Risk Level", "risk", default="UNKNOWN")).upper()
+
+
+def render_release_comparison() -> None:
+    if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        render_access_denied("Administrator or Release Engineer")
+        return
+    section_title("Release Comparison", "Compare version drift, vulnerability movement, and readiness between release baselines.")
+    releases = [CURRENT_RELEASE_LABEL, *list_releases()]
+    if len(releases) < 2:
+        st.info("Create at least one release snapshot to compare it with Current.")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        base_release = st.selectbox("Base Release", releases, index=0)
+    with col2:
+        target_default = 1 if len(releases) > 1 else 0
+        target_release = st.selectbox("Target Release", releases, index=target_default)
+
+    if base_release == target_release:
+        st.warning("Select two different releases.")
+        return
+
+    base_comparison = load_release_output(base_release, "comparison_report.json")
+    target_comparison = load_release_output(target_release, "comparison_report.json")
+    base_vulnerabilities = load_release_output(base_release, "vulnerability_report.json")
+    target_vulnerabilities = load_release_output(target_release, "vulnerability_report.json")
+
+    base_updates = {name for name, record in base_comparison.items() if is_actionable_update(record)}
+    target_updates = {name for name, record in target_comparison.items() if is_actionable_update(record)}
+    resolved_updates = sorted(base_updates - target_updates)
+    new_updates = sorted(target_updates - base_updates)
+    carried_updates = sorted(base_updates & target_updates)
+
+    base_risky = {
+        name
+        for name, record in base_vulnerabilities.items()
+        if vulnerability_risk(record) in {"CRITICAL", "HIGH", "MEDIUM"}
+    }
+    target_risky = {
+        name
+        for name, record in target_vulnerabilities.items()
+        if vulnerability_risk(record) in {"CRITICAL", "HIGH", "MEDIUM"}
+    }
+    resolved_risk = sorted(base_risky - target_risky)
+    new_risk = sorted(target_risky - base_risky)
+    carried_risk = sorted(base_risky & target_risky)
+
+    metric_cols = st.columns(6)
+    metric_cols[0].metric("Base Updates", len(base_updates))
+    metric_cols[1].metric("Target Updates", len(target_updates))
+    metric_cols[2].metric("Resolved Updates", len(resolved_updates))
+    metric_cols[3].metric("New Updates", len(new_updates))
+    metric_cols[4].metric("Resolved Risk", len(resolved_risk))
+    metric_cols[5].metric("New Risk", len(new_risk))
+
+    rows = []
+    for name in sorted(set(base_comparison) | set(target_comparison)):
+        base_record = base_comparison.get(name, {})
+        target_record = target_comparison.get(name, {})
+        rows.append(
+            {
+                "Software Name": name,
+                "Base Current": value(base_record, "Current Version", "current_version", default="Not available"),
+                "Base Target": value(base_record, "Latest Version", "Target Version", default="Not available"),
+                "Target Current": value(target_record, "Current Version", "current_version", default="Not available"),
+                "Target Target": value(target_record, "Latest Version", "Target Version", default="Not available"),
+                "Update Movement": (
+                    "Resolved" if name in resolved_updates else
+                    "New" if name in new_updates else
+                    "Carried Forward" if name in carried_updates else
+                    "No Action"
+                ),
+                "Base Risk": vulnerability_risk(base_vulnerabilities.get(name, {})),
+                "Target Risk": vulnerability_risk(target_vulnerabilities.get(name, {})),
+                "Risk Movement": (
+                    "Resolved" if name in resolved_risk else
+                    "New" if name in new_risk else
+                    "Carried Forward" if name in carried_risk else
+                    "No Material Risk"
+                ),
+            }
+        )
+
+    searchable_table(
+        pd.DataFrame(rows),
+        "release_comparison",
+        ["Update Movement", "Risk Movement", "Base Risk", "Target Risk"],
+    )
+
+
 def render_compatibility_check(qa_df: pd.DataFrame) -> None:
     section_title("Compatibility Check", "Operating system, runtime, browser, database, and architecture readiness for deployment validation.")
     if qa_df.empty:
@@ -2518,7 +2759,9 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         "Test Notes",
         "Evidence File",
     ]
-    impact = load_json(str(TESTCASE_IMPACT_FILE), file_mtime(TESTCASE_IMPACT_FILE))
+    testcase_impact_file = active_output_path("testcase_impact.json")
+    testcase_impact_excel_file = active_output_path("Test_Case_Impact_Assessment.xlsx")
+    impact = load_json(str(testcase_impact_file), file_mtime(testcase_impact_file))
     impacted = impact.get("impacted_software", {}) if isinstance(impact, dict) else {}
     qa_df["Test Case Count"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Case Count", 0))
     qa_df["Test Coverage"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
@@ -2547,11 +2790,11 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             "Applicable Version",
         ]
         searchable_table(testcase_df[display_cols], "testcase_impact", ["Test Coverage", "Priority", "Test Type", "Owner"])
-        if TESTCASE_IMPACT_EXCEL_FILE.exists():
+        if testcase_impact_excel_file.exists():
             st.download_button(
                 "Download Recommended Test Case Plan",
-                TESTCASE_IMPACT_EXCEL_FILE.read_bytes(),
-                file_name=TESTCASE_IMPACT_EXCEL_FILE.name,
+                testcase_impact_excel_file.read_bytes(),
+                file_name=testcase_impact_excel_file.name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
@@ -2804,13 +3047,14 @@ def render_reports(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_d
     col3.metric("Security Findings", int(vuln_df["CVE Count"].sum()) if not vuln_df.empty else 0)
 
     st.subheader("Report Package")
+    email_html_file = active_output_path("email_preview.html")
     mime_by_name = {
-        EMAIL_HTML_FILE.name: "text/html",
-        EXCEL_FILE.name: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        TESTCASE_IMPACT_EXCEL_FILE.name: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        PACKAGE_READINESS_FILE.name: "application/json",
-        QA_VALIDATION_FILE.name: "application/json",
-        TESTCASE_IMPACT_FILE.name: "application/json",
+        "email_preview.html": "text/html",
+        "Software_Version_Assessment.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Test_Case_Impact_Assessment.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "package_readiness.json": "application/json",
+        "qa_validation.json": "application/json",
+        "testcase_impact.json": "application/json",
     }
     files = [
         (label, path, mime_by_name.get(path.name, "application/octet-stream"))
@@ -2838,7 +3082,7 @@ def render_reports(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_d
 
     st.subheader("Management Report Preview")
     st.caption("This is the business-focused report body used for email notifications.")
-    html = load_file_text(str(EMAIL_HTML_FILE), file_mtime(EMAIL_HTML_FILE))
+    html = load_file_text(str(email_html_file), file_mtime(email_html_file))
     if html:
         components.html(html, height=760, scrolling=True)
     else:
@@ -3013,17 +3257,26 @@ def render_settings(config: dict[str, Any]) -> None:
 
 def main() -> None:
     inject_css()
-    config = load_json(str(CONFIG_FILE), file_mtime(CONFIG_FILE))
-    if not require_login(config):
+    base_config = load_config()
+    if not require_login(base_config):
         return
+    config = active_config(base_config)
     sync_background_schedule_from_config(config)
 
-    current = load_json(str(CURRENT_FILE), file_mtime(CURRENT_FILE))
-    latest = load_json(str(LATEST_FILE), file_mtime(LATEST_FILE))
-    comparison = load_json(str(COMPARISON_FILE), file_mtime(COMPARISON_FILE))
-    vulnerabilities = load_json(str(VULNERABILITY_FILE), file_mtime(VULNERABILITY_FILE))
-    cache_metrics = load_json(str(CACHE_METRICS_FILE), file_mtime(CACHE_METRICS_FILE))
-    metrics_df = load_metrics(str(METRICS_FILE), file_mtime(METRICS_FILE))
+    output_files = config.get("output_files", {})
+    current_file = project_path(output_files.get("current_version_json", "output/current_versions.json"))
+    latest_file = project_path(output_files.get("latest_version_json", "output/latest_versions.json"))
+    comparison_file = project_path(output_files.get("comparison_report_json", "output/comparison_report.json"))
+    vulnerability_file = project_path(output_files.get("vulnerability_report_json", "output/vulnerability_report.json"))
+    cache_metrics_file = project_path(output_files.get("cache_metrics_file", "output/cache/cache_metrics.json"))
+    metrics_file = project_path(output_files.get("metrics_file", "output/metrics.jsonl"))
+
+    current = load_json(str(current_file), file_mtime(current_file))
+    latest = load_json(str(latest_file), file_mtime(latest_file))
+    comparison = load_json(str(comparison_file), file_mtime(comparison_file))
+    vulnerabilities = load_json(str(vulnerability_file), file_mtime(vulnerability_file))
+    cache_metrics = load_json(str(cache_metrics_file), file_mtime(cache_metrics_file))
+    metrics_df = load_metrics(str(metrics_file), file_mtime(metrics_file))
 
     current_df = normalize_current(current)
     latest_df = normalize_latest(latest)
@@ -3036,7 +3289,7 @@ def main() -> None:
 
     workflow_status = "Completed" if not comparison_df.empty else "Not Run"
     last_scan = last_scan_time(latest, vulnerabilities)
-    page = render_sidebar(config, workflow_status, last_scan)
+    page = render_sidebar(base_config, workflow_status, last_scan)
     render_app_header(page, workflow_status, last_scan)
 
     if page == "Dashboard":
@@ -3049,6 +3302,8 @@ def main() -> None:
         render_latest(latest_df)
     elif page == "Version Comparison":
         render_comparison(comparison_df)
+    elif page == "Release Comparison":
+        render_release_comparison()
     elif page == "Package Readiness":
         render_package_readiness(readiness_df)
     elif page == "Compatibility Check":
