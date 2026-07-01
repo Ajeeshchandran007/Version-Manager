@@ -57,39 +57,60 @@
       "team_scope": ["*"]
     },
     {
-      "username": "sourceone",
-      "password": "sourceone",
+      "username": "sourceone_release",
+      "password": "sourceone_release",
       "role": "Release Engineer",
       "display_name": "SourceOne Release",
       "team_scope": ["SourceOne"]
     },
     {
-      "username": "dps",
-      "password": "dps",
+      "username": "sourceone_qa",
+      "password": "sourceone_qa",
+      "role": "QA Engineer",
+      "display_name": "SourceOne QA",
+      "team_scope": ["SourceOne"]
+    },
+    {
+      "username": "dps_release",
+      "password": "dps_release",
       "role": "Release Engineer",
       "display_name": "DPS Release",
       "team_scope": ["DPS"]
     },
     {
-      "username": "avamar",
-      "password": "avamar",
+      "username": "dps_qa",
+      "password": "dps_qa",
+      "role": "QA Engineer",
+      "display_name": "DPS QA",
+      "team_scope": ["DPS"]
+    },
+    {
+      "username": "avamar_release",
+      "password": "avamar_release",
       "role": "Release Engineer",
       "display_name": "Avamar Release",
       "team_scope": ["Avamar"]
     },
     {
-      "username": "package",
-      "password": "package",
+      "username": "avamar_qa",
+      "password": "avamar_qa",
+      "role": "QA Engineer",
+      "display_name": "Avamar QA",
+      "team_scope": ["Avamar"]
+    },
+    {
+      "username": "package_release",
+      "password": "package_release",
       "role": "Release Engineer",
-      "display_name": "Package Team",
+      "display_name": "Package Team Release",
       "team_scope": ["PackageTeam"]
     },
     {
-      "username": "qa",
-      "password": "qa",
+      "username": "package_qa",
+      "password": "package_qa",
       "role": "QA Engineer",
-      "display_name": "QA Engineer",
-      "team_scope": ["*"]
+      "display_name": "Package Team QA",
+      "team_scope": ["PackageTeam"]
     }
   ],
   "servers": {

@@ -1900,11 +1900,14 @@ def configured_users(config: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     return [
         {"username": "admin", "password": "admin", "role": ROLE_ADMIN, "display_name": "Administrator", "team_scope": ["*"]},
-        {"username": "sourceone", "password": "sourceone", "role": ROLE_RELEASE_ENGINEER, "display_name": "SourceOne Release", "team_scope": ["SourceOne"]},
-        {"username": "dps", "password": "dps", "role": ROLE_RELEASE_ENGINEER, "display_name": "DPS Release", "team_scope": ["DPS"]},
-        {"username": "avamar", "password": "avamar", "role": ROLE_RELEASE_ENGINEER, "display_name": "Avamar Release", "team_scope": ["Avamar"]},
-        {"username": "package", "password": "package", "role": ROLE_RELEASE_ENGINEER, "display_name": "Package Team", "team_scope": ["PackageTeam"]},
-        {"username": "qa", "password": "qa", "role": ROLE_QA_ENGINEER, "display_name": "QA Engineer", "team_scope": ["*"]},
+        {"username": "sourceone_release", "password": "sourceone_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "SourceOne Release", "team_scope": ["SourceOne"]},
+        {"username": "sourceone_qa", "password": "sourceone_qa", "role": ROLE_QA_ENGINEER, "display_name": "SourceOne QA", "team_scope": ["SourceOne"]},
+        {"username": "dps_release", "password": "dps_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "DPS Release", "team_scope": ["DPS"]},
+        {"username": "dps_qa", "password": "dps_qa", "role": ROLE_QA_ENGINEER, "display_name": "DPS QA", "team_scope": ["DPS"]},
+        {"username": "avamar_release", "password": "avamar_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "Avamar Release", "team_scope": ["Avamar"]},
+        {"username": "avamar_qa", "password": "avamar_qa", "role": ROLE_QA_ENGINEER, "display_name": "Avamar QA", "team_scope": ["Avamar"]},
+        {"username": "package_release", "password": "package_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "Package Team Release", "team_scope": ["PackageTeam"]},
+        {"username": "package_qa", "password": "package_qa", "role": ROLE_QA_ENGINEER, "display_name": "Package Team QA", "team_scope": ["PackageTeam"]},
     ]
 
 
