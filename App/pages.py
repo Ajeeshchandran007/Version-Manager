@@ -360,7 +360,7 @@ def render_release_workspace(config: dict[str, Any], ctx: Any) -> None:
                 else:
                     st.error(message)
 
-    if can_run_operations():
+    if current_role() in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         st.subheader("Freeze Pre-Release Work as Release")
         st.caption("Use this after package readiness and QA validation are complete enough to save a release baseline.")
         form_cols = st.columns([1, 1, 1])
@@ -411,7 +411,10 @@ def render_release_workspace(config: dict[str, Any], ctx: Any) -> None:
                     st.rerun()
             with confirm_cols[1]:
                 if st.button("Confirm Freeze as Release", type="primary", use_container_width=True):
-                    ok, message = create_release_snapshot(release, base_release, config, team)
+                    if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+                        ok, message = False, "Only Release Engineer or Admin can freeze a release."
+                    else:
+                        ok, message = create_release_snapshot(release, base_release, config, team)
                     st.session_state.pop("pending_release_freeze", None)
                     if ok:
                         ctx.clear_dashboard_cache()
@@ -419,6 +422,8 @@ def render_release_workspace(config: dict[str, Any], ctx: Any) -> None:
                         st.rerun()
                     else:
                         st.error(message)
+    elif st.session_state.get("pending_release_freeze"):
+        st.session_state.pop("pending_release_freeze", None)
 
     rows = release_summary_rows(active_team_name(), ctx)
     st.subheader("Release Baselines")
