@@ -165,7 +165,6 @@ def _query_param_value(name: str) -> str | None:
 def _restore_user_from_auth_token(
     config: dict[str, Any],
     allowed_teams_resolver: Callable[[dict[str, Any] | None], list[str]],
-    current_release_label: str,
 ) -> bool:
     token = _query_param_value("vm_session")
     if not token:
@@ -178,7 +177,6 @@ def _restore_user_from_auth_token(
     scoped_teams = allowed_teams_resolver(user)
     if len(scoped_teams) == 1:
         st.session_state["active_team"] = scoped_teams[0]
-        st.session_state.setdefault("active_release", current_release_label)
     return True
 
 
@@ -199,7 +197,6 @@ def clear_user_session() -> None:
 def require_login(
     config: dict[str, Any],
     allowed_teams_resolver: Callable[[dict[str, Any] | None], list[str]],
-    current_release_label: str,
 ) -> bool:
     auth_cfg = config.get("auth", {})
     if auth_cfg.get("enabled", True) is False:
@@ -210,7 +207,7 @@ def require_login(
         return True
     if current_user():
         return True
-    if _restore_user_from_auth_token(config, allowed_teams_resolver, current_release_label):
+    if _restore_user_from_auth_token(config, allowed_teams_resolver):
         return True
 
     login_placeholder = st.empty()
@@ -260,7 +257,6 @@ def require_login(
                         scoped_teams = allowed_teams_resolver(authenticated_user)
                         if len(scoped_teams) == 1:
                             st.session_state["active_team"] = scoped_teams[0]
-                            st.session_state["active_release"] = current_release_label
                         _persist_user_session(authenticated_user, config)
                         login_placeholder.empty()
                         return True

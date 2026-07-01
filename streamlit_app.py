@@ -31,24 +31,16 @@ from App.emailing import prepare_email_report_files, qa_report_attachments
 from App import pages as app_pages
 from App.workspace import (
     BASE_DIR,
-    CURRENT_RELEASE_DISPLAY_LABEL,
-    CURRENT_RELEASE_LABEL,
     DEFAULT_TEAM_LABEL,
     OUTPUT_DIR,
     RELEASE_OUTPUT_KEYS,
     active_config,
     active_output_path,
-    active_release_name,
     active_team_name,
     allowed_teams_for_user,
     config_path_for_result,
-    create_release_snapshot,
     create_team_snapshot,
-    list_releases,
     project_path,
-    release_display_label,
-    release_output_dir,
-    release_value_from_display,
     team_input_software_path,
 )
 from Core.compatibility_fetcher import CompatibilityRequirementFetcher
@@ -98,8 +90,6 @@ ACTION_ROLES = {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}
 ADMIN_ROLES = {ROLE_ADMIN}
 BASE_PAGES = [
     "Dashboard",
-    "Release Workspace",
-    "Release Freeze Status",
     "Software Inventory",
     "Latest Versions",
     "Version Comparison",
@@ -108,7 +98,7 @@ BASE_PAGES = [
     "Reports",
 ]
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
-RELEASE_PAGES = ["Release Comparison", "Package Readiness"]
+RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
 ADMIN_PAGES = ["Audit Logs", "Settings"]
 
@@ -1878,7 +1868,6 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
     with st.sidebar:
         user = current_user()
         active_team = active_team_name()
-        active_release = active_release_name()
         st.markdown("### Version Manager")
         st.caption("Software posture and remediation operations")
         st.markdown(
@@ -1888,7 +1877,6 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
                 <div class="vm-sidebar-kv">Role<strong>{current_role()}</strong></div>
                 <div class="vm-sidebar-kv">Project<strong>Version Manager</strong></div>
                 <div class="vm-sidebar-kv">Team<strong>{active_team}</strong></div>
-                <div class="vm-sidebar-kv">Release<strong>{release_display_label(active_release)}</strong></div>
                 <div class="vm-sidebar-kv">Scope<strong>Version and Security Assessment</strong></div>
                 <div class="vm-sidebar-kv">Workflow<strong>{workflow_status}</strong></div>
                 <div class="vm-sidebar-kv">Last Scan<strong>{last_scan}</strong></div>
@@ -2060,18 +2048,6 @@ def render_dashboard_page(current_df: pd.DataFrame, comparison_df: pd.DataFrame,
     app_pages.render_dashboard_page(current_df, comparison_df, vuln_df, metrics_df, page_context())
 
 
-def release_summary_rows(team: str) -> list[dict[str, Any]]:
-    return app_pages.release_summary_rows(team, page_context())
-
-
-def render_release_workspace(config: dict[str, Any]) -> None:
-    app_pages.render_release_workspace(config, page_context())
-
-
-def render_release_freeze_status(config: dict[str, Any], comparison_df: pd.DataFrame, readiness_df: pd.DataFrame, qa_df: pd.DataFrame) -> None:
-    app_pages.render_release_freeze_status(config, comparison_df, readiness_df, qa_df, page_context())
-
-
 def render_context_selector(location: str = "dashboard") -> None:
     app_pages.render_context_selector(page_context(), location)
 
@@ -2115,7 +2091,7 @@ def render_package_readiness(readiness_df: pd.DataFrame) -> None:
     if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         render_access_denied("Administrator or Release Engineer")
         return
-    section_title("Package Readiness", "Release engineering workspace for package preparation, vendor review, and upgrade impact.")
+    section_title("Package Readiness", "Package preparation, vendor review, dependency validation, and upgrade impact.")
     if readiness_df.empty:
         st.info("No package readiness data found. Run version comparison first.")
         return
@@ -2129,117 +2105,6 @@ def render_package_readiness(readiness_df: pd.DataFrame) -> None:
         readiness_df,
         "package_readiness",
         ["Package Readiness", "Upgrade Impact", "Owner", "Installer Type", "Vendor"],
-    )
-
-
-def load_release_output(release: str, filename: str, team: str | None = None) -> dict[str, Any]:
-    team = team or active_team_name()
-    if release == CURRENT_RELEASE_LABEL:
-        path = team_workspace_output_dir(team) / filename
-    else:
-        path = release_output_dir(release, team) / filename
-    return load_json(str(path), file_mtime(path))
-
-
-def vulnerability_risk(record: dict[str, Any]) -> str:
-    return str(value(record, "risk_level", "Risk Level", "risk", default="UNKNOWN")).upper()
-
-
-def render_release_comparison() -> None:
-    if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
-        render_access_denied("Administrator or Release Engineer")
-        return
-    section_title("Release Comparison", "Compare version drift, vulnerability movement, and readiness between release baselines.")
-    teams = list_teams()
-    selected_team = st.selectbox(
-        "Team / Product Stream",
-        teams,
-        index=teams.index(active_team_name()) if active_team_name() in teams else 0,
-    )
-    releases = [CURRENT_RELEASE_LABEL, *list_releases(selected_team)]
-    if len(releases) < 2:
-        st.info(f"Create at least one release baseline to compare it with {CURRENT_RELEASE_DISPLAY_LABEL}.")
-        return
-
-    col1, col2 = st.columns(2)
-    release_display_options = [release_display_label(release) for release in releases]
-    with col1:
-        base_release_display = st.selectbox("Base Release", release_display_options, index=0)
-        base_release = release_value_from_display(base_release_display)
-    with col2:
-        target_default = 1 if len(releases) > 1 else 0
-        target_release_display = st.selectbox("Target Release", release_display_options, index=target_default)
-        target_release = release_value_from_display(target_release_display)
-
-    if base_release == target_release:
-        st.warning("Select two different releases.")
-        return
-
-    base_comparison = load_release_output(base_release, "comparison_report.json", selected_team)
-    target_comparison = load_release_output(target_release, "comparison_report.json", selected_team)
-    base_vulnerabilities = load_release_output(base_release, "vulnerability_report.json", selected_team)
-    target_vulnerabilities = load_release_output(target_release, "vulnerability_report.json", selected_team)
-
-    base_updates = {name for name, record in base_comparison.items() if is_actionable_update(record)}
-    target_updates = {name for name, record in target_comparison.items() if is_actionable_update(record)}
-    resolved_updates = sorted(base_updates - target_updates)
-    new_updates = sorted(target_updates - base_updates)
-    carried_updates = sorted(base_updates & target_updates)
-
-    base_risky = {
-        name
-        for name, record in base_vulnerabilities.items()
-        if vulnerability_risk(record) in {"CRITICAL", "HIGH", "MEDIUM"}
-    }
-    target_risky = {
-        name
-        for name, record in target_vulnerabilities.items()
-        if vulnerability_risk(record) in {"CRITICAL", "HIGH", "MEDIUM"}
-    }
-    resolved_risk = sorted(base_risky - target_risky)
-    new_risk = sorted(target_risky - base_risky)
-    carried_risk = sorted(base_risky & target_risky)
-
-    metric_cols = st.columns(6)
-    metric_cols[0].metric("Base Updates", len(base_updates))
-    metric_cols[1].metric("Target Updates", len(target_updates))
-    metric_cols[2].metric("Resolved Updates", len(resolved_updates))
-    metric_cols[3].metric("New Updates", len(new_updates))
-    metric_cols[4].metric("Resolved Risk", len(resolved_risk))
-    metric_cols[5].metric("New Risk", len(new_risk))
-
-    rows = []
-    for name in sorted(set(base_comparison) | set(target_comparison)):
-        base_record = base_comparison.get(name, {})
-        target_record = target_comparison.get(name, {})
-        rows.append(
-            {
-                "Software Name": name,
-                "Base Current": value(base_record, "Current Version", "current_version", default="Not available"),
-                "Base Target": value(base_record, "Latest Version", "Target Version", default="Not available"),
-                "Target Current": value(target_record, "Current Version", "current_version", default="Not available"),
-                "Target Target": value(target_record, "Latest Version", "Target Version", default="Not available"),
-                "Update Movement": (
-                    "Resolved" if name in resolved_updates else
-                    "New" if name in new_updates else
-                    "Carried Forward" if name in carried_updates else
-                    "No Action"
-                ),
-                "Base Risk": vulnerability_risk(base_vulnerabilities.get(name, {})),
-                "Target Risk": vulnerability_risk(target_vulnerabilities.get(name, {})),
-                "Risk Movement": (
-                    "Resolved" if name in resolved_risk else
-                    "New" if name in new_risk else
-                    "Carried Forward" if name in carried_risk else
-                    "No Material Risk"
-                ),
-            }
-        )
-
-    searchable_table(
-        pd.DataFrame(rows),
-        "release_comparison",
-        ["Update Movement", "Risk Movement", "Base Risk", "Target Risk"],
     )
 
 
@@ -2754,7 +2619,7 @@ def render_settings(config: dict[str, Any]) -> None:
 def main() -> None:
     inject_css()
     base_config = load_config()
-    if not require_login(base_config, allowed_teams_for_user, CURRENT_RELEASE_LABEL):
+    if not require_login(base_config, allowed_teams_for_user):
         return
     config = active_config(base_config)
     sync_background_schedule_from_config(config)
@@ -2790,10 +2655,6 @@ def main() -> None:
 
     if page == "Dashboard":
         render_dashboard_page(current_df, comparison_df, vuln_df, metrics_df)
-    elif page == "Release Workspace":
-        render_release_workspace(base_config)
-    elif page == "Release Freeze Status":
-        render_release_freeze_status(base_config, comparison_df, readiness_df, qa_df)
     elif page == "Operations":
         render_operations(config)
     elif page == "Software Inventory":
@@ -2802,8 +2663,6 @@ def main() -> None:
         render_latest(latest_df)
     elif page == "Version Comparison":
         render_comparison(comparison_df)
-    elif page == "Release Comparison":
-        render_release_comparison()
     elif page == "Package Readiness":
         render_package_readiness(readiness_df)
     elif page == "Compatibility Check":
