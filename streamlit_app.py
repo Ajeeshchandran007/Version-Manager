@@ -1130,8 +1130,14 @@ def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
                 if unknown else "All software versions are up to date"
             )
         )
-        sent = send_email(subject, body, html_body=html_body)
-        return {"sent": sent, "subject": subject, "error": get_last_email_error()}
+        attachments = qa_report_attachments(config)
+        sent = send_email(subject, body, html_body=html_body, attachments=attachments)
+        return {
+            "sent": sent,
+            "subject": subject,
+            "attachments": [path.name for path in attachments],
+            "error": get_last_email_error(),
+        }
 
     async def log_audit_event(step: str, details: dict | None = None) -> dict[str, Any]:
         run_id = (details or {}).get("run_id", "streamlit")
@@ -1272,11 +1278,13 @@ def trigger_send_report_email() -> dict[str, Any]:
             if unknown else "All software versions are up to date"
         )
     )
-    sent = send_email(subject, body, html_body=html_body)
+    attachments = qa_report_attachments(config)
+    sent = send_email(subject, body, html_body=html_body, attachments=attachments)
     return {
         "operation": "send_report_email",
         "sent": sent,
         "subject": subject,
+        "attachments": [path.name for path in attachments],
         "recipients": len(config.get("smtp", {}).get("recipients", [])),
         "error": get_last_email_error(),
     }
@@ -1968,6 +1976,15 @@ def prepare_email_report_files(
     text_file.write_text(body, encoding="utf-8")
     html_file.write_text(html_body, encoding="utf-8")
     return body, html_body
+
+
+def qa_report_attachments(config: dict[str, Any]) -> list[Path]:
+    if current_role() != ROLE_QA_ENGINEER:
+        return []
+    testcase_plan = project_path(
+        config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx")
+    )
+    return [testcase_plan] if testcase_plan.exists() and testcase_plan.is_file() else []
 
 
 def _auth_secret(config: dict[str, Any]) -> bytes:

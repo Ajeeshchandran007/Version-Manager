@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import smtplib
+from pathlib import Path
 from html import escape
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -218,7 +220,12 @@ def build_html_report(
 </html>"""
 
 
-def send_email(subject: str, body: str, html_body: str | None = None) -> bool:
+def send_email(
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+    attachments: list[str | Path] | None = None,
+) -> bool:
     global LAST_EMAIL_ERROR
     LAST_EMAIL_ERROR = None
 
@@ -232,13 +239,25 @@ def send_email(subject: str, body: str, html_body: str | None = None) -> bool:
         logger.warning(f"Email blocked by policy: {LAST_EMAIL_ERROR}")
         return False
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["From"] = smtp_cfg["sender"]
     msg["To"] = ", ".join(smtp_cfg["recipients"])
     msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
+
+    alternative = MIMEMultipart("alternative")
+    alternative.attach(MIMEText(body, "plain"))
     if html_body:
-        msg.attach(MIMEText(html_body, "html"))
+        alternative.attach(MIMEText(html_body, "html"))
+    msg.attach(alternative)
+
+    for attachment in attachments or []:
+        path = Path(attachment)
+        if not path.exists() or not path.is_file():
+            logger.warning(f"Email attachment not found: {path}")
+            continue
+        part = MIMEApplication(path.read_bytes(), Name=path.name)
+        part["Content-Disposition"] = f'attachment; filename="{path.name}"'
+        msg.attach(part)
 
     try:
         with smtplib.SMTP(smtp_cfg["server"], smtp_cfg["port"]) as srv:
