@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import shutil
 import time
 from datetime import datetime, timedelta
