@@ -2,6 +2,7 @@
 config.json
 output/
 releases/
+workspaces/
 *.log
 __pycache__/
 *.pyc

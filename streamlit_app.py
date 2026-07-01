@@ -46,6 +46,7 @@ BASE_DIR = Path(__file__).resolve().parent
 INPUT_DIR = BASE_DIR / "Input"
 OUTPUT_DIR = BASE_DIR / "output"
 RELEASES_DIR = BASE_DIR / "releases"
+WORKSPACES_DIR = BASE_DIR / "workspaces"
 CACHE_DIR = OUTPUT_DIR / "cache"
 
 CURRENT_FILE = OUTPUT_DIR / "current_versions.json"
@@ -840,13 +841,18 @@ def release_output_dir(release: str, team: str | None = None) -> Path:
     return release_root(release, team) / "output"
 
 
+def team_workspace_output_dir(team: str | None = None) -> Path:
+    team = team or active_team_name()
+    if team == DEFAULT_TEAM_LABEL:
+        return OUTPUT_DIR
+    return WORKSPACES_DIR / team_name_to_path_name(team) / "output"
+
+
 def active_output_path(filename: str) -> Path:
     team = active_team_name()
     release = active_release_name()
-    if release == CURRENT_RELEASE_LABEL and team == DEFAULT_TEAM_LABEL:
-        return OUTPUT_DIR / filename
     if release == CURRENT_RELEASE_LABEL:
-        return RELEASES_DIR / team_name_to_path_name(team) / CURRENT_RELEASE_LABEL / "output" / filename
+        return team_workspace_output_dir(team) / filename
     return release_output_dir(release, team) / filename
 
 
@@ -2800,10 +2806,8 @@ def render_package_readiness(readiness_df: pd.DataFrame) -> None:
 
 def load_release_output(release: str, filename: str, team: str | None = None) -> dict[str, Any]:
     team = team or active_team_name()
-    if release == CURRENT_RELEASE_LABEL and team == DEFAULT_TEAM_LABEL:
-        path = OUTPUT_DIR / filename
-    elif release == CURRENT_RELEASE_LABEL:
-        path = RELEASES_DIR / team_name_to_path_name(team) / CURRENT_RELEASE_LABEL / "output" / filename
+    if release == CURRENT_RELEASE_LABEL:
+        path = team_workspace_output_dir(team) / filename
     else:
         path = release_output_dir(release, team) / filename
     return load_json(str(path), file_mtime(path))
