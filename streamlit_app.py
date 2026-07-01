@@ -2086,6 +2086,16 @@ def require_login(config: dict[str, Any]) -> bool:
                 username = st.text_input("Username")
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
+            with st.expander("Available roles", expanded=False):
+                role_rows = [
+                    {
+                        "Username": user["username"],
+                        "Role": user["role"],
+                        "Team Scope": "All Teams" if "*" in user.get("team_scope", ["*"]) else ", ".join(user.get("team_scope", [])),
+                    }
+                    for user in configured_users(config)
+                ]
+                st.dataframe(pd.DataFrame(role_rows), use_container_width=True, hide_index=True)
             if submitted:
                 for user in configured_users(config):
                     if username.strip().lower() == user["username"].lower() and password == user["password"]:
