@@ -14,7 +14,6 @@ from App.workspace import (
     active_release_line,
     active_team_name,
     allowed_teams_for_user,
-    create_release_line_snapshot,
     list_release_lines,
     project_path,
 )
@@ -52,25 +51,6 @@ def render_context_selector(ctx: Any, location: str = "dashboard") -> None:
         st.session_state["active_release_line"] = selected_release
         ctx.clear_dashboard_cache()
         st.rerun()
-
-    if current_role() in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
-        with st.expander("Add Product Version / Release Line", expanded=False):
-            st.caption("Creates a version-specific input folder from the selected baseline. This is data baselining, not release workflow approval.")
-            new_release = st.text_input("New Product Version", placeholder="7.2.11", key=f"{location}_new_release_line")
-            base_release = st.selectbox(
-                "Base From",
-                releases,
-                index=releases.index(selected_release) if selected_release in releases else 0,
-                key=f"{location}_base_release_line",
-            )
-            if st.button("Create Version Baseline", use_container_width=True, key=f"{location}_create_release_line"):
-                ok, message = create_release_line_snapshot(selected_team, new_release, base_release)
-                if ok:
-                    st.success(message)
-                    ctx.clear_dashboard_cache()
-                    st.rerun()
-                else:
-                    st.error(message)
 
 
 def render_operations(config: dict[str, Any], ctx: Any) -> None:
