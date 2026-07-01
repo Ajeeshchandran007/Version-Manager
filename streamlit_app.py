@@ -36,6 +36,7 @@ from App.workspace import (
     RELEASE_OUTPUT_KEYS,
     active_config,
     active_output_path,
+    active_release_line,
     active_team_name,
     allowed_teams_for_user,
     config_path_for_result,
@@ -1868,6 +1869,7 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
     with st.sidebar:
         user = current_user()
         active_team = active_team_name()
+        active_release = active_release_line(active_team)
         st.markdown("### Version Manager")
         st.caption("Software posture and remediation operations")
         st.markdown(
@@ -1877,6 +1879,7 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
                 <div class="vm-sidebar-kv">Role<strong>{current_role()}</strong></div>
                 <div class="vm-sidebar-kv">Project<strong>Version Manager</strong></div>
                 <div class="vm-sidebar-kv">Team<strong>{active_team}</strong></div>
+                <div class="vm-sidebar-kv">Release Line<strong>{active_release}</strong></div>
                 <div class="vm-sidebar-kv">Scope<strong>Version and Security Assessment</strong></div>
                 <div class="vm-sidebar-kv">Workflow<strong>{workflow_status}</strong></div>
                 <div class="vm-sidebar-kv">Last Scan<strong>{last_scan}</strong></div>

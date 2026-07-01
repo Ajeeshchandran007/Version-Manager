@@ -9,9 +9,13 @@ import streamlit.components.v1 as components
 from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER, can_run_operations, current_role, user_team_scope
 from App.workspace import (
     DEFAULT_TEAM_LABEL,
+    WORKING_RELEASE_LABEL,
     active_output_path,
+    active_release_line,
     active_team_name,
     allowed_teams_for_user,
+    create_release_line_snapshot,
+    list_release_lines,
     project_path,
 )
 
@@ -32,8 +36,41 @@ def render_context_selector(ctx: Any, location: str = "dashboard") -> None:
 
     if selected_team != st.session_state.get("active_team", DEFAULT_TEAM_LABEL):
         st.session_state["active_team"] = selected_team
+        st.session_state.pop("active_release_line", None)
         ctx.clear_dashboard_cache()
         st.rerun()
+
+    releases = list_release_lines(selected_team)
+    current_release = active_release_line(selected_team)
+    selected_release = st.selectbox(
+        "Product Version / Release Line",
+        releases,
+        index=releases.index(current_release) if current_release in releases else 0,
+        key=f"{location}_release_line_selector",
+    )
+    if selected_release != st.session_state.get("active_release_line", WORKING_RELEASE_LABEL):
+        st.session_state["active_release_line"] = selected_release
+        ctx.clear_dashboard_cache()
+        st.rerun()
+
+    if current_role() in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        with st.expander("Add Product Version / Release Line", expanded=False):
+            st.caption("Creates a version-specific input folder from the selected baseline. This is data baselining, not release workflow approval.")
+            new_release = st.text_input("New Product Version", placeholder="7.2.11", key=f"{location}_new_release_line")
+            base_release = st.selectbox(
+                "Base From",
+                releases,
+                index=releases.index(selected_release) if selected_release in releases else 0,
+                key=f"{location}_base_release_line",
+            )
+            if st.button("Create Version Baseline", use_container_width=True, key=f"{location}_create_release_line"):
+                ok, message = create_release_line_snapshot(selected_team, new_release, base_release)
+                if ok:
+                    st.success(message)
+                    ctx.clear_dashboard_cache()
+                    st.rerun()
+                else:
+                    st.error(message)
 
 
 def render_operations(config: dict[str, Any], ctx: Any) -> None:
@@ -59,6 +96,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     col1, col2, col3 = st.columns([1.1, 1, 1])
     with col1:
         st.metric("Run Context", active_team_name())
+        st.caption(f"Release Line: {active_release_line()}")
         st.caption(f"Input: {input_path}")
     with col2:
         force_refresh = st.toggle(
@@ -253,7 +291,7 @@ def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln
 
 def render_dashboard_page(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, metrics_df: pd.DataFrame, ctx: Any) -> None:
     render_context_selector(ctx, "dashboard")
-    st.caption(f"Viewing: {active_team_name()}")
+    st.caption(f"Viewing: {active_team_name()} / {active_release_line()}")
     render_dashboard(current_df, comparison_df, vuln_df, metrics_df, ctx)
 
 
