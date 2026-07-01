@@ -789,7 +789,7 @@ def user_team_scope(user: dict[str, Any] | None = None) -> list[str]:
 
 
 def allowed_teams_for_user(user: dict[str, Any] | None = None) -> list[str]:
-    teams = allowed_teams_for_user()
+    teams = list_teams()
     scope = user_team_scope(user)
     if "*" in scope or current_role() == ROLE_ADMIN:
         return teams
