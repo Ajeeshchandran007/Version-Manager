@@ -2690,6 +2690,12 @@ def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln
         st.info("No scan timeline metrics available.")
 
 
+def render_dashboard_page(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, metrics_df: pd.DataFrame) -> None:
+    render_context_selector("dashboard")
+    st.caption(f"Viewing: {active_team_name()} / {active_release_name()}")
+    render_dashboard(current_df, comparison_df, vuln_df, metrics_df)
+
+
 def release_summary_rows(team: str) -> list[dict[str, Any]]:
     rows = []
     for release in list_releases(team):
@@ -2724,30 +2730,9 @@ def release_summary_rows(team: str) -> list[dict[str, Any]]:
 def render_release_workspace(config: dict[str, Any]) -> None:
     section_title("Release Workspace", "Select team context, create release snapshots, and manage release-specific assessment outputs.")
 
-    teams = allowed_teams_for_user()
-    current_team = active_team_name()
-    team_col, release_col = st.columns(2)
-    with team_col:
-        selected_team = st.selectbox(
-            "Team / Product Stream",
-            teams,
-            index=teams.index(current_team) if current_team in teams else 0,
-        )
+    render_context_selector("release_workspace")
+    selected_team = active_team_name()
     releases = list_releases(selected_team)
-    release_options = [CURRENT_RELEASE_LABEL, *releases]
-    current_release = active_release_name() if selected_team == current_team else CURRENT_RELEASE_LABEL
-    with release_col:
-        selected_release = st.selectbox(
-            "Release",
-            release_options,
-            index=release_options.index(current_release) if current_release in release_options else 0,
-        )
-
-    if selected_team != st.session_state.get("active_team", DEFAULT_TEAM_LABEL) or selected_release != st.session_state.get("active_release", CURRENT_RELEASE_LABEL):
-        st.session_state["active_team"] = selected_team
-        st.session_state["active_release"] = selected_release
-        clear_dashboard_cache()
-        st.rerun()
 
     active_cfg = active_config(config)
     input_path = project_path(active_cfg.get("input_files", {}).get("software_yml", "Input/software.yml"))
@@ -2806,6 +2791,40 @@ def render_release_workspace(config: dict[str, Any]) -> None:
         searchable_table(pd.DataFrame(rows), "release_workspace_summary", ["Release"])
     else:
         st.info("No release snapshots found for this team yet.")
+
+
+def render_context_selector(location: str = "dashboard") -> None:
+    teams = allowed_teams_for_user()
+    current_team = active_team_name()
+    team_col, release_col = st.columns(2)
+    with team_col:
+        if len(teams) == 1:
+            st.text_input("Team / Product Stream", value=teams[0], disabled=True, key=f"{location}_team_locked")
+            selected_team = teams[0]
+        else:
+            selected_team = st.selectbox(
+                "Team / Product Stream",
+                teams,
+                index=teams.index(current_team) if current_team in teams else 0,
+                key=f"{location}_team_selector",
+            )
+
+    releases = list_releases(selected_team)
+    release_options = [CURRENT_RELEASE_LABEL, *releases]
+    current_release = active_release_name() if selected_team == current_team else CURRENT_RELEASE_LABEL
+    with release_col:
+        selected_release = st.selectbox(
+            "Release",
+            release_options,
+            index=release_options.index(current_release) if current_release in release_options else 0,
+            key=f"{location}_release_selector",
+        )
+
+    if selected_team != st.session_state.get("active_team", DEFAULT_TEAM_LABEL) or selected_release != st.session_state.get("active_release", CURRENT_RELEASE_LABEL):
+        st.session_state["active_team"] = selected_team
+        st.session_state["active_release"] = selected_release
+        clear_dashboard_cache()
+        st.rerun()
 
 
 def render_inventory(current_df: pd.DataFrame) -> None:
@@ -3564,7 +3583,7 @@ def main() -> None:
     render_app_header(page, workflow_status, last_scan)
 
     if page == "Dashboard":
-        render_dashboard(current_df, comparison_df, vuln_df, metrics_df)
+        render_dashboard_page(current_df, comparison_df, vuln_df, metrics_df)
     elif page == "Release Workspace":
         render_release_workspace(base_config)
     elif page == "Operations":
