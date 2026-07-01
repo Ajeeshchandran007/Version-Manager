@@ -2068,8 +2068,8 @@ def render_release_workspace(config: dict[str, Any]) -> None:
     app_pages.render_release_workspace(config, page_context())
 
 
-def render_release_freeze_status(comparison_df: pd.DataFrame, readiness_df: pd.DataFrame, qa_df: pd.DataFrame) -> None:
-    app_pages.render_release_freeze_status(comparison_df, readiness_df, qa_df, page_context())
+def render_release_freeze_status(config: dict[str, Any], comparison_df: pd.DataFrame, readiness_df: pd.DataFrame, qa_df: pd.DataFrame) -> None:
+    app_pages.render_release_freeze_status(config, comparison_df, readiness_df, qa_df, page_context())
 
 
 def render_context_selector(location: str = "dashboard") -> None:
@@ -2793,7 +2793,7 @@ def main() -> None:
     elif page == "Release Workspace":
         render_release_workspace(base_config)
     elif page == "Release Freeze Status":
-        render_release_freeze_status(comparison_df, readiness_df, qa_df)
+        render_release_freeze_status(base_config, comparison_df, readiness_df, qa_df)
     elif page == "Operations":
         render_operations(config)
     elif page == "Software Inventory":

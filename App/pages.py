@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER, can_manage_settings, can_run_operations, current_role, user_team_scope
+from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER, can_manage_settings, can_run_operations, current_role, current_user, user_team_scope
 from App.workspace import (
     CURRENT_RELEASE_DISPLAY_LABEL,
     CURRENT_RELEASE_LABEL,
@@ -437,42 +439,93 @@ def release_freeze_status(
     not_tested = int((qa_df.get("Test Result", pd.Series(dtype=str)) == "NOT TESTED").sum()) if not qa_df.empty else 0
     source_review = int((comparison_df.get("Status", pd.Series(dtype=str)) == "Source Review").sum()) if not comparison_df.empty else 0
     test_plan = active_output_path("Test_Case_Impact_Assessment.xlsx")
+    signoffs = load_release_signoffs()
 
     gates = [
         {
+            "Key": "release_package",
             "Gate": "Release Package Review",
             "Owner": "Release Engineer",
-            "Status": "Ready" if not readiness_df.empty and blocked_packages == 0 else "Action Required",
+            "Evidence Status": "Ready" if not readiness_df.empty and blocked_packages == 0 else "Action Required",
             "Evidence": f"{len(readiness_df)} package record(s); {blocked_packages} blocked item(s)",
         },
         {
+            "Key": "qa_validation",
             "Gate": "QA Validation",
             "Owner": "QA Engineer",
-            "Status": "Ready" if not qa_df.empty and failed_tests == 0 and not_tested == 0 else "Action Required",
+            "Evidence Status": "Ready" if not qa_df.empty and failed_tests == 0 and not_tested == 0 else "Action Required",
             "Evidence": f"{len(qa_df)} QA record(s); {failed_tests} failed, {not_tested} not tested",
         },
         {
+            "Key": "security_source_review",
             "Gate": "Version Source Review",
             "Owner": "Release Engineer",
-            "Status": "Ready" if source_review == 0 else "Action Required",
+            "Evidence Status": "Ready" if source_review == 0 else "Action Required",
             "Evidence": f"{source_review} source-review item(s)",
         },
         {
+            "Key": "recommended_test_plan",
             "Gate": "Recommended Test Plan",
             "Owner": "QA Engineer",
-            "Status": "Ready" if test_plan.exists() else "Action Required",
+            "Evidence Status": "Ready" if test_plan.exists() else "Action Required",
             "Evidence": str(test_plan),
         },
     ]
+    for gate in gates:
+        signoff = signoffs.get(gate["Key"], {})
+        gate["Sign-off"] = "Signed Off" if signoff else "Pending"
+        gate["Signed By"] = signoff.get("display_name", "")
+        gate["Signed At"] = signoff.get("signed_at", "")
+        gate["Status"] = "Ready" if gate["Evidence Status"] == "Ready" and signoff else "Action Required"
+
     ready = all(gate["Status"] == "Ready" for gate in gates)
     return {
         "ready": ready,
         "summary": "Ready to Freeze" if ready else "Not Ready to Freeze",
         "gates": gates,
+        "signoffs": signoffs,
     }
 
 
+def load_release_signoffs() -> dict[str, Any]:
+    path = active_output_path("release_freeze_signoffs.json")
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_release_signoff(key: str) -> None:
+    path = active_output_path("release_freeze_signoffs.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    signoffs = load_release_signoffs()
+    user = current_user()
+    signoffs[key] = {
+        "username": user.get("username", "unknown"),
+        "display_name": user.get("display_name", user.get("username", "unknown")),
+        "role": current_role(),
+        "team": active_team_name(),
+        "release": active_release_name(),
+        "signed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    path.write_text(json.dumps(signoffs, indent=2), encoding="utf-8")
+
+
+def can_sign_gate(key: str) -> bool:
+    role = current_role()
+    if role == ROLE_ADMIN:
+        return True
+    if key in {"release_package", "security_source_review"}:
+        return role == ROLE_RELEASE_ENGINEER
+    if key in {"qa_validation", "recommended_test_plan"}:
+        return role == ROLE_QA_ENGINEER
+    return False
+
+
 def render_release_freeze_status(
+    config: dict[str, Any],
     comparison_df: pd.DataFrame,
     readiness_df: pd.DataFrame,
     qa_df: pd.DataFrame,
@@ -486,20 +539,60 @@ def render_release_freeze_status(
     cols[0].metric("Team", active_team_name())
     cols[1].metric("Release Context", release_display_label(active_release_name()))
     cols[2].metric("Freeze Status", status["summary"])
-    cols[3].metric("Open Gates", len([gate for gate in status["gates"] if gate["Status"] != "Ready"]))
+    open_gates = [gate for gate in status["gates"] if gate["Status"] != "Ready"]
+    cols[3].metric("Open Gates", len(open_gates))
 
     if status["ready"]:
         st.success("This release context is ready to freeze. Admin or Release Engineer can freeze it from Release Workspace.")
     else:
         st.warning("This release context is not ready to freeze. Complete the action-required gates below.")
 
-    gate_df = pd.DataFrame(status["gates"])
+    gate_df = pd.DataFrame(status["gates"]).drop(columns=["Key"], errors="ignore")
     ctx.searchable_table(gate_df, "release_freeze_status", ["Owner", "Status"])
 
-    action_rows = [gate for gate in status["gates"] if gate["Status"] != "Ready"]
+    st.subheader("Gate Sign-offs")
+    sign_cols = st.columns(4)
+    for col, gate in zip(sign_cols, status["gates"]):
+        with col:
+            st.markdown(f"**{gate['Gate']}**")
+            st.caption(gate["Owner"])
+            st.caption(gate["Evidence"])
+            if gate["Sign-off"] == "Signed Off":
+                st.success(f"Signed by {gate['Signed By']}")
+            elif gate["Evidence Status"] != "Ready":
+                st.warning("Evidence not ready")
+            elif can_sign_gate(gate["Key"]):
+                if st.button(f"Sign off {gate['Owner']}", key=f"signoff_{gate['Key']}", use_container_width=True):
+                    save_release_signoff(gate["Key"])
+                    st.rerun()
+            else:
+                st.info("Waiting for owner sign-off")
+
+    action_rows = open_gates
     if action_rows:
         st.subheader("Open Actions")
-        st.dataframe(ctx.style_operational_table(pd.DataFrame(action_rows)), use_container_width=True, hide_index=True)
+        st.dataframe(ctx.style_operational_table(pd.DataFrame(action_rows).drop(columns=["Key"], errors="ignore")), use_container_width=True, hide_index=True)
+
+    st.subheader("Final Freeze")
+    if active_release_name() != CURRENT_RELEASE_LABEL:
+        st.info(f"{release_display_label(active_release_name())} is already a frozen release context.")
+    elif current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        st.info("Final freeze is owned by Release Engineer or Admin after all gates are signed off.")
+    elif not status["ready"]:
+        st.warning("Final freeze is disabled until every evidence gate is ready and signed off.")
+    else:
+        freeze_cols = st.columns([1, 1])
+        release_name = freeze_cols[0].text_input("Release Name To Freeze", placeholder="7.2.12")
+        with freeze_cols[1]:
+            st.write("")
+            st.write("")
+            if st.button("Freeze Signed-off Release", type="primary", use_container_width=True):
+                ok, message = create_release_snapshot(release_name, CURRENT_RELEASE_LABEL, config, active_team_name())
+                if ok:
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
 
 
 def render_reports(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, ctx: Any) -> None:
