@@ -898,10 +898,12 @@ def create_release_snapshot(release_name: str, base_release: str, config: dict[s
     output_dir = target / "output"
     input_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    for filename in TEAM_INPUT_FILES.values():
-        source_file = source_root / filename
-        if source_file.exists():
-            shutil.copy2(source_file, input_dir / filename)
+    for item in source_root.iterdir():
+        destination = input_dir / item.name
+        if item.is_dir():
+            shutil.copytree(item, destination, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, destination)
     st.session_state["active_team"] = team
     st.session_state["active_release"] = release
     return True, f"Release {release} created for {team} from {base_release}."
@@ -921,10 +923,12 @@ def create_team_snapshot(team_name: str, config: dict[str, Any]) -> tuple[bool, 
     if not source.exists():
         return False, f"Base software.yml was not found: {source}"
     target_root.mkdir(parents=True, exist_ok=True)
-    for filename in TEAM_INPUT_FILES.values():
-        source_file = source_root / filename
-        if source_file.exists():
-            shutil.copy2(source_file, target_root / filename)
+    for item in source_root.iterdir():
+        destination = target_root / item.name
+        if item.is_dir():
+            shutil.copytree(item, destination, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, destination)
     st.session_state["active_team"] = team
     st.session_state["active_release"] = CURRENT_RELEASE_LABEL
     return True, f"Team {team} created from current software.yml."
