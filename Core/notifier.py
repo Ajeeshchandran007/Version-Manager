@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import smtplib
+import re
 from pathlib import Path
 from html import escape
 from email.mime.application import MIMEApplication
@@ -520,6 +521,9 @@ def _version_gap(item: dict[str, Any]) -> str:
             return f"{diff} CU(s) behind"
         return "CU mismatch"
 
+    if _mixed_version_scheme(current_build, latest_build):
+        return "Source review"
+
     current_major = _major_version(current_build)
     latest_major = _major_version(latest_build)
     if current_major is not None and latest_major is not None:
@@ -587,6 +591,16 @@ def _major_version(version: str | None) -> int | None:
         return None
     digits = version.split(".", 1)[0]
     return int(digits) if digits.isdigit() else None
+
+
+def _mixed_version_scheme(current_version: str, latest_version: str) -> bool:
+    current_parts = [int(part) for part in re.findall(r"\d+", str(current_version or ""))[:4]]
+    latest_parts = [int(part) for part in re.findall(r"\d+", str(latest_version or ""))[:4]]
+    if not current_parts or not latest_parts:
+        return False
+    if current_parts[0] == latest_parts[0]:
+        return False
+    return max(current_parts[0], latest_parts[0]) >= 100 or abs(current_parts[0] - latest_parts[0]) >= 50
 
 
 def _display_name(software: str) -> str:

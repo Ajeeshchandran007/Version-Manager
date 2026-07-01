@@ -1211,6 +1211,8 @@ def version_gap(current_version: str, latest_version: str, current_cu: str = "",
         return "None"
     if current_version.lower() == latest_version.lower() and current_cu and latest_cu and current_cu.lower() != latest_cu.lower():
         return "CU Gap"
+    if mixed_version_scheme(current_version, latest_version):
+        return "Source Review"
     current_major = current_version.split(".")[0]
     latest_major = latest_version.split(".")[0]
     if current_major and latest_major and current_major != latest_major:
@@ -1222,11 +1224,21 @@ def update_priority(gap: str, risk: str) -> str:
     risk = risk.upper()
     if risk in {"CRITICAL", "HIGH"}:
         return risk.title()
-    if gap in {"Major Gap", "CU Gap"}:
+    if gap in {"Major Gap", "CU Gap", "Source Review"}:
         return "Medium"
     if gap in {"Patch Gap", "Minor Gap"}:
         return "Low"
     return "None"
+
+
+def mixed_version_scheme(current_version: str, latest_version: str) -> bool:
+    current_parts = [int(part) for part in re.findall(r"\d+", str(current_version or ""))[:4]]
+    latest_parts = [int(part) for part in re.findall(r"\d+", str(latest_version or ""))[:4]]
+    if not current_parts or not latest_parts:
+        return False
+    if current_parts[0] == latest_parts[0]:
+        return False
+    return max(current_parts[0], latest_parts[0]) >= 100 or abs(current_parts[0] - latest_parts[0]) >= 50
 
 
 def ensure_workspace_outputs(
@@ -1346,7 +1358,7 @@ def normalize_comparison(data: dict[str, Any], vulnerabilities: dict[str, Any]) 
                 "Version Gap": gap,
                 "Need Update": "Yes" if needs_update else "No",
                 "Update Priority": update_priority(gap, risk),
-                "Status": "Outdated" if needs_update else "Up-to-date",
+                "Status": "Source Review" if gap == "Source Review" else ("Outdated" if needs_update else "Up-to-date"),
                 "Risk Level": risk,
             }
         )

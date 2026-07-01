@@ -48,6 +48,8 @@ def version_gap(current_version: str, latest_version: str, current_cu: str = "",
         return "None"
     if current_version.lower() == latest_version.lower() and current_cu and latest_cu and current_cu.lower() != latest_cu.lower():
         return "CU Gap"
+    if mixed_version_scheme(current_version, latest_version):
+        return "Source Review"
     current_major = current_version.split(".")[0]
     latest_major = latest_version.split(".")[0]
     if current_major and latest_major and current_major != latest_major:
@@ -78,6 +80,16 @@ def _numeric_version_parts(version: str) -> list[int]:
     return [int(part) for part in parts[:4]]
 
 
+def mixed_version_scheme(current_version: str, latest_version: str) -> bool:
+    current_parts = _numeric_version_parts(current_version)
+    latest_parts = _numeric_version_parts(latest_version)
+    if not current_parts or not latest_parts:
+        return False
+    if current_parts[0] == latest_parts[0]:
+        return False
+    return max(current_parts[0], latest_parts[0]) >= 100 or abs(current_parts[0] - latest_parts[0]) >= 50
+
+
 def blocker_reason(
     name: str,
     current_version: str,
@@ -101,6 +113,12 @@ def blocker_reason(
 
     if not needs_update:
         return "Ready for Packaging", ""
+
+    if gap == "Source Review":
+        return (
+            "Dependency Review Required",
+            f"Current version {current_version} and target version {latest_version} appear to use different version schemes; validate vendor source mapping before packaging.",
+        )
 
     if current_cu and latest_cu and current_cu != latest_cu:
         return (

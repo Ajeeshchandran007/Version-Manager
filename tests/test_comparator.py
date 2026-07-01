@@ -3,6 +3,7 @@ import unittest
 from tests.conftest_path import PROJECT_ROOT  # noqa: F401
 from Core.comparator import compare
 from Core.notifier import is_actionable_update
+from Core.workspace_assessment import blocker_reason, version_gap
 
 
 class ComparatorTests(unittest.TestCase):
@@ -34,6 +35,24 @@ class ComparatorTests(unittest.TestCase):
 
         self.assertTrue(report["SQL Server 2019"]["needs_update"])
         self.assertTrue(is_actionable_update(report["SQL Server 2019"]))
+
+    def test_mixed_vendor_version_scheme_requires_source_review(self):
+        gap = version_gap("15.02.0858.010", "1748.037")
+        readiness, reason = blocker_reason(
+            "MS Exchange Server 2019",
+            "15.02.0858.010",
+            "1748.037",
+            "",
+            "CU15",
+            gap,
+            "LOW",
+            has_target=True,
+            needs_update=True,
+        )
+
+        self.assertEqual(gap, "Source Review")
+        self.assertEqual(readiness, "Dependency Review Required")
+        self.assertIn("different version schemes", reason)
 
 
 if __name__ == "__main__":
