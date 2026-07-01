@@ -66,6 +66,7 @@ EMAIL_HTML_FILE = OUTPUT_DIR / "email_preview.html"
 EMAIL_TEXT_FILE = OUTPUT_DIR / "email_preview.txt"
 
 CURRENT_RELEASE_LABEL = "Current"
+DEFAULT_TEAM_LABEL = "Default"
 RELEASE_OUTPUT_KEYS = {
     "latest_version_json": "latest_versions.json",
     "current_version_json": "current_versions.json",
@@ -85,6 +86,7 @@ ACTION_ROLES = {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}
 ADMIN_ROLES = {ROLE_ADMIN}
 BASE_PAGES = [
     "Dashboard",
+    "Release Workspace",
     "Software Inventory",
     "Latest Versions",
     "Version Comparison",
@@ -753,50 +755,100 @@ def release_name_to_path_name(name: str) -> str:
     return cleaned
 
 
-def list_releases() -> list[str]:
-    if not RELEASES_DIR.exists():
-        return []
-    return sorted(
-        path.name
-        for path in RELEASES_DIR.iterdir()
-        if path.is_dir() and (path / "input" / "software.yml").exists()
-    )
+def team_name_to_path_name(name: str) -> str:
+    return release_name_to_path_name(name) or DEFAULT_TEAM_LABEL
+
+
+def list_teams() -> list[str]:
+    teams = {DEFAULT_TEAM_LABEL}
+    teams_dir = INPUT_DIR / "teams"
+    if teams_dir.exists():
+        teams.update(
+            path.name
+            for path in teams_dir.iterdir()
+            if path.is_dir() and (path / "software.yml").exists()
+        )
+    if RELEASES_DIR.exists():
+        for path in RELEASES_DIR.iterdir():
+            if path.is_dir() and not (path / "input" / "software.yml").exists():
+                teams.add(path.name)
+    return sorted(teams)
+
+
+def active_team_name() -> str:
+    team = st.session_state.get("active_team", DEFAULT_TEAM_LABEL)
+    return team if team in list_teams() else DEFAULT_TEAM_LABEL
+
+
+def team_input_software_path(team: str) -> Path:
+    if team == DEFAULT_TEAM_LABEL:
+        return INPUT_DIR / "software.yml"
+    return INPUT_DIR / "teams" / team_name_to_path_name(team) / "software.yml"
+
+
+def list_releases(team: str | None = None) -> list[str]:
+    team = team or active_team_name()
+    releases = set()
+    team_release_root = RELEASES_DIR / team_name_to_path_name(team)
+    if team_release_root.exists():
+        releases.update(
+            path.name
+            for path in team_release_root.iterdir()
+            if path.is_dir() and (path / "input" / "software.yml").exists()
+        )
+    if team == DEFAULT_TEAM_LABEL and RELEASES_DIR.exists():
+        releases.update(
+            path.name
+            for path in RELEASES_DIR.iterdir()
+            if path.is_dir() and (path / "input" / "software.yml").exists()
+        )
+    return sorted(releases)
 
 
 def active_release_name() -> str:
     release = st.session_state.get("active_release", CURRENT_RELEASE_LABEL)
-    return release if release == CURRENT_RELEASE_LABEL or release in list_releases() else CURRENT_RELEASE_LABEL
+    return release if release == CURRENT_RELEASE_LABEL or release in list_releases(active_team_name()) else CURRENT_RELEASE_LABEL
 
 
-def release_root(release: str) -> Path:
-    return RELEASES_DIR / release_name_to_path_name(release)
+def release_root(release: str, team: str | None = None) -> Path:
+    team = team or active_team_name()
+    release_path = release_name_to_path_name(release)
+    if team == DEFAULT_TEAM_LABEL and (RELEASES_DIR / release_path / "input" / "software.yml").exists():
+        return RELEASES_DIR / release_path
+    return RELEASES_DIR / team_name_to_path_name(team) / release_path
 
 
 def relpath(path: Path) -> str:
     return path.relative_to(BASE_DIR).as_posix()
 
 
-def release_output_dir(release: str) -> Path:
-    return release_root(release) / "output"
+def release_output_dir(release: str, team: str | None = None) -> Path:
+    return release_root(release, team) / "output"
 
 
 def active_output_path(filename: str) -> Path:
+    team = active_team_name()
     release = active_release_name()
-    if release == CURRENT_RELEASE_LABEL:
+    if release == CURRENT_RELEASE_LABEL and team == DEFAULT_TEAM_LABEL:
         return OUTPUT_DIR / filename
-    return release_output_dir(release) / filename
+    if release == CURRENT_RELEASE_LABEL:
+        return RELEASES_DIR / team_name_to_path_name(team) / CURRENT_RELEASE_LABEL / "output" / filename
+    return release_output_dir(release, team) / filename
 
 
 def active_config(config: dict[str, Any]) -> dict[str, Any]:
+    team = active_team_name()
     release = active_release_name()
-    if release == CURRENT_RELEASE_LABEL:
+    if release == CURRENT_RELEASE_LABEL and team == DEFAULT_TEAM_LABEL:
         return config
     scoped = json.loads(json.dumps(config))
-    root = release_root(release)
-    scoped.setdefault("input_files", {})["software_yml"] = relpath(root / "input" / "software.yml")
+    scoped.setdefault("input_files", {})["software_yml"] = relpath(
+        team_input_software_path(team) if release == CURRENT_RELEASE_LABEL else release_root(release, team) / "input" / "software.yml"
+    )
     output_files = scoped.setdefault("output_files", {})
+    output_root = active_output_path("__placeholder__").parent
     for key, filename in RELEASE_OUTPUT_KEYS.items():
-        output_files[key] = relpath(root / "output" / filename)
+        output_files[key] = relpath(output_root / filename)
     return scoped
 
 
@@ -809,18 +861,21 @@ def config_path_for_result(output_key: str) -> str:
     return str(active_output_path(filename)) if filename else ""
 
 
-def create_release_snapshot(release_name: str, base_release: str, config: dict[str, Any]) -> tuple[bool, str]:
+def create_release_snapshot(release_name: str, base_release: str, config: dict[str, Any], team: str | None = None) -> tuple[bool, str]:
+    team = team or active_team_name()
     release = release_name_to_path_name(release_name)
     if not release:
         return False, "Enter a release name such as 7.2.11."
-    target = release_root(release)
+    target = release_root(release, team)
     if target.exists():
-        return False, f"Release {release} already exists."
+        return False, f"Release {release} already exists for {team}."
 
     if base_release == CURRENT_RELEASE_LABEL:
-        source = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
+        source = team_input_software_path(team)
+        if team == DEFAULT_TEAM_LABEL:
+            source = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
     else:
-        source = release_root(base_release) / "input" / "software.yml"
+        source = release_root(base_release, team) / "input" / "software.yml"
     if not source.exists():
         return False, f"Base software.yml was not found: {source}"
 
@@ -829,8 +884,26 @@ def create_release_snapshot(release_name: str, base_release: str, config: dict[s
     input_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, input_dir / "software.yml")
+    st.session_state["active_team"] = team
     st.session_state["active_release"] = release
-    return True, f"Release {release} created from {base_release}."
+    return True, f"Release {release} created for {team} from {base_release}."
+
+
+def create_team_snapshot(team_name: str, config: dict[str, Any]) -> tuple[bool, str]:
+    team = team_name_to_path_name(team_name)
+    if not team or team == DEFAULT_TEAM_LABEL:
+        return False, "Enter a team name such as SourceOne, DPS, Avamar, or PackageTeam."
+    target = team_input_software_path(team)
+    if target.exists():
+        return False, f"Team {team} already has an input software.yml."
+    source = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
+    if not source.exists():
+        return False, f"Base software.yml was not found: {source}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    st.session_state["active_team"] = team
+    st.session_state["active_release"] = CURRENT_RELEASE_LABEL
+    return True, f"Team {team} created from current software.yml."
 
 
 def runtime_state() -> dict[str, Any]:
@@ -2146,6 +2219,8 @@ def searchable_table(df: pd.DataFrame, key: str, filter_columns: list[str] | Non
 def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str) -> str:
     with st.sidebar:
         user = current_user()
+        active_team = active_team_name()
+        active_release = active_release_name()
         st.markdown("### Version Manager")
         st.caption("Software posture and remediation operations")
         st.markdown(
@@ -2154,6 +2229,8 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
                 <div class="vm-sidebar-kv">Signed In<strong>{user.get("display_name", user.get("username", "Unknown"))}</strong></div>
                 <div class="vm-sidebar-kv">Role<strong>{current_role()}</strong></div>
                 <div class="vm-sidebar-kv">Project<strong>Version Manager</strong></div>
+                <div class="vm-sidebar-kv">Team<strong>{active_team}</strong></div>
+                <div class="vm-sidebar-kv">Release<strong>{active_release}</strong></div>
                 <div class="vm-sidebar-kv">Scope<strong>Version and Security Assessment</strong></div>
                 <div class="vm-sidebar-kv">Workflow<strong>{workflow_status}</strong></div>
                 <div class="vm-sidebar-kv">Last Scan<strong>{last_scan}</strong></div>
@@ -2166,36 +2243,9 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
             _clear_user_session()
             st.rerun()
         st.divider()
-        releases = list_releases()
-        release_options = [CURRENT_RELEASE_LABEL, *releases]
-        current_release = active_release_name()
-        selected_release = st.selectbox(
-            "Release",
-            release_options,
-            index=release_options.index(current_release) if current_release in release_options else 0,
-            help="Select Current for global reports, or a release baseline for release-specific outputs.",
-        )
-        if selected_release != st.session_state.get("active_release", CURRENT_RELEASE_LABEL):
-            st.session_state["active_release"] = selected_release
-            clear_dashboard_cache()
-            st.rerun()
-        if can_run_operations():
-            with st.expander("Create Release", expanded=False):
-                base_options = [CURRENT_RELEASE_LABEL, *releases]
-                new_release = st.text_input("Release Name", placeholder="7.2.11")
-                base_release = st.selectbox("Base From", base_options)
-                if st.button("Create Release Snapshot", use_container_width=True):
-                    ok, message = create_release_snapshot(new_release, base_release, config)
-                    if ok:
-                        clear_dashboard_cache()
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(message)
-        st.divider()
         pages = pages_for_role(current_role())
         if can_run_operations():
-            pages.insert(1, "Operations")
+            pages.insert(2, "Operations")
         return st.radio(
             "Navigation",
             pages,
@@ -2546,6 +2596,122 @@ def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln
         st.info("No scan timeline metrics available.")
 
 
+def release_summary_rows(team: str) -> list[dict[str, Any]]:
+    rows = []
+    for release in list_releases(team):
+        root = release_root(release, team)
+        output = root / "output"
+        comparison = load_json(str(output / "comparison_report.json"), file_mtime(output / "comparison_report.json"))
+        vulnerabilities = load_json(str(output / "vulnerability_report.json"), file_mtime(output / "vulnerability_report.json"))
+        readiness = load_json(str(output / "package_readiness.json"), file_mtime(output / "package_readiness.json"))
+        risky = [
+            name for name, record in vulnerabilities.items()
+            if vulnerability_risk(record) in {"CRITICAL", "HIGH", "MEDIUM"}
+        ]
+        rows.append(
+            {
+                "Team": team,
+                "Release": release,
+                "Software Count": len(comparison) or len(readiness),
+                "Updates Required": len([name for name, record in comparison.items() if is_actionable_update(record)]),
+                "Security Risk Items": len(risky),
+                "Package Records": len(readiness),
+                "Last Updated": format_epoch_ts(max(
+                    file_mtime(output / "comparison_report.json"),
+                    file_mtime(output / "vulnerability_report.json"),
+                    file_mtime(output / "package_readiness.json"),
+                    file_mtime(output / "qa_validation.json"),
+                )),
+            }
+        )
+    return rows
+
+
+def render_release_workspace(config: dict[str, Any]) -> None:
+    section_title("Release Workspace", "Select team context, create release snapshots, and manage release-specific assessment outputs.")
+
+    teams = list_teams()
+    current_team = active_team_name()
+    team_col, release_col = st.columns(2)
+    with team_col:
+        selected_team = st.selectbox(
+            "Team / Product Stream",
+            teams,
+            index=teams.index(current_team) if current_team in teams else 0,
+        )
+    releases = list_releases(selected_team)
+    release_options = [CURRENT_RELEASE_LABEL, *releases]
+    current_release = active_release_name() if selected_team == current_team else CURRENT_RELEASE_LABEL
+    with release_col:
+        selected_release = st.selectbox(
+            "Release",
+            release_options,
+            index=release_options.index(current_release) if current_release in release_options else 0,
+        )
+
+    if selected_team != st.session_state.get("active_team", DEFAULT_TEAM_LABEL) or selected_release != st.session_state.get("active_release", CURRENT_RELEASE_LABEL):
+        st.session_state["active_team"] = selected_team
+        st.session_state["active_release"] = selected_release
+        clear_dashboard_cache()
+        st.rerun()
+
+    active_cfg = active_config(config)
+    input_path = project_path(active_cfg.get("input_files", {}).get("software_yml", "Input/software.yml"))
+    output_path = active_output_path("comparison_report.json").parent
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Active Team", active_team_name())
+    metric_cols[1].metric("Active Release", active_release_name())
+    metric_cols[2].metric("Known Releases", len(releases))
+    metric_cols[3].metric("Input Exists", "Yes" if input_path.exists() else "No")
+
+    st.markdown("**Active Paths**")
+    st.code(f"Input:  {input_path}\nOutput: {output_path}", language="text")
+
+    if can_run_operations():
+        st.subheader("Create Team / Product Stream")
+        team_cols = st.columns([1, 1])
+        with team_cols[0]:
+            new_team = st.text_input("New Team Name", placeholder="SourceOne")
+        with team_cols[1]:
+            st.write("")
+            st.write("")
+            create_team_clicked = st.button("Create Team From Current Input", use_container_width=True)
+        if create_team_clicked:
+            ok, message = create_team_snapshot(new_team, config)
+            if ok:
+                clear_dashboard_cache()
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+        st.subheader("Create Release Snapshot")
+        form_cols = st.columns([1, 1, 1])
+        with form_cols[0]:
+            new_release = st.text_input("New Release Name", placeholder="7.2.11")
+        with form_cols[1]:
+            base_release = st.selectbox("Base From", [CURRENT_RELEASE_LABEL, *releases], key="release_workspace_base")
+        with form_cols[2]:
+            st.write("")
+            st.write("")
+            create_clicked = st.button("Create Snapshot", type="primary", use_container_width=True)
+        if create_clicked:
+            ok, message = create_release_snapshot(new_release, base_release, config, selected_team)
+            if ok:
+                clear_dashboard_cache()
+                st.success(message)
+                st.rerun()
+            else:
+                st.error(message)
+
+    rows = release_summary_rows(active_team_name())
+    st.subheader("Release Baselines")
+    if rows:
+        searchable_table(pd.DataFrame(rows), "release_workspace_summary", ["Release"])
+    else:
+        st.info("No release snapshots found for this team yet.")
+
+
 def render_inventory(current_df: pd.DataFrame) -> None:
     section_title("Software Inventory", "Installed software inventory from live servers and document extraction.")
     display_df = current_df.drop(columns=["Source"], errors="ignore")
@@ -2602,11 +2768,14 @@ def render_package_readiness(readiness_df: pd.DataFrame) -> None:
     )
 
 
-def load_release_output(release: str, filename: str) -> dict[str, Any]:
-    if release == CURRENT_RELEASE_LABEL:
+def load_release_output(release: str, filename: str, team: str | None = None) -> dict[str, Any]:
+    team = team or active_team_name()
+    if release == CURRENT_RELEASE_LABEL and team == DEFAULT_TEAM_LABEL:
         path = OUTPUT_DIR / filename
+    elif release == CURRENT_RELEASE_LABEL:
+        path = RELEASES_DIR / team_name_to_path_name(team) / CURRENT_RELEASE_LABEL / "output" / filename
     else:
-        path = release_output_dir(release) / filename
+        path = release_output_dir(release, team) / filename
     return load_json(str(path), file_mtime(path))
 
 
@@ -2619,7 +2788,13 @@ def render_release_comparison() -> None:
         render_access_denied("Administrator or Release Engineer")
         return
     section_title("Release Comparison", "Compare version drift, vulnerability movement, and readiness between release baselines.")
-    releases = [CURRENT_RELEASE_LABEL, *list_releases()]
+    teams = list_teams()
+    selected_team = st.selectbox(
+        "Team / Product Stream",
+        teams,
+        index=teams.index(active_team_name()) if active_team_name() in teams else 0,
+    )
+    releases = [CURRENT_RELEASE_LABEL, *list_releases(selected_team)]
     if len(releases) < 2:
         st.info("Create at least one release snapshot to compare it with Current.")
         return
@@ -2635,10 +2810,10 @@ def render_release_comparison() -> None:
         st.warning("Select two different releases.")
         return
 
-    base_comparison = load_release_output(base_release, "comparison_report.json")
-    target_comparison = load_release_output(target_release, "comparison_report.json")
-    base_vulnerabilities = load_release_output(base_release, "vulnerability_report.json")
-    target_vulnerabilities = load_release_output(target_release, "vulnerability_report.json")
+    base_comparison = load_release_output(base_release, "comparison_report.json", selected_team)
+    target_comparison = load_release_output(target_release, "comparison_report.json", selected_team)
+    base_vulnerabilities = load_release_output(base_release, "vulnerability_report.json", selected_team)
+    target_vulnerabilities = load_release_output(target_release, "vulnerability_report.json", selected_team)
 
     base_updates = {name for name, record in base_comparison.items() if is_actionable_update(record)}
     target_updates = {name for name, record in target_comparison.items() if is_actionable_update(record)}
@@ -3295,6 +3470,8 @@ def main() -> None:
 
     if page == "Dashboard":
         render_dashboard(current_df, comparison_df, vuln_df, metrics_df)
+    elif page == "Release Workspace":
+        render_release_workspace(base_config)
     elif page == "Operations":
         render_operations(config)
     elif page == "Software Inventory":
