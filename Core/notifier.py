@@ -509,18 +509,15 @@ def _version_gap(item: dict[str, Any]) -> str:
     latest_build = str(latest.get("Build Version") or "").strip()
     current_cu = current.get("Cumulative Update (CU)")
     latest_cu = latest.get("Cumulative Update (CU)")
-    if current_build and latest_build and current_build.lower() == latest_build.lower():
-        if not current_cu and not latest_cu:
-            return "No version gap"
-        if str(current_cu or "").strip().lower() == str(latest_cu or "").strip().lower():
-            return "No version gap"
+    builds_match = bool(current_build and latest_build and current_build.lower() == latest_build.lower())
+    cus_match = str(current_cu or "").strip().lower() == str(latest_cu or "").strip().lower()
+    if builds_match and cus_match:
+        return "No version gap"
 
-    if current_cu and latest_cu:
+    if builds_match and current_cu and latest_cu:
         diff = _cu_number(latest_cu) - _cu_number(current_cu)
         if diff > 0:
             return f"{diff} CU(s) behind"
-        if diff == 0:
-            return "No version gap"
         return "CU mismatch"
 
     current_major = _major_version(current_build)
@@ -530,6 +527,8 @@ def _version_gap(item: dict[str, Any]) -> str:
             return "Major version gap"
         if latest_major > current_major:
             return "Major upgrade"
+        if latest_major == current_major:
+            return "Patch/build gap"
     return "Build/version gap"
 
 

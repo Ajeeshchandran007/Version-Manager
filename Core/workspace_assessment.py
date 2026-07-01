@@ -46,13 +46,13 @@ def version_gap(current_version: str, latest_version: str, current_cu: str = "",
         return "Unknown"
     if current_version.lower() == latest_version.lower() and current_cu.lower() == latest_cu.lower():
         return "None"
-    if current_cu and latest_cu and current_cu != latest_cu:
+    if current_version.lower() == latest_version.lower() and current_cu and latest_cu and current_cu.lower() != latest_cu.lower():
         return "CU Gap"
     current_major = current_version.split(".")[0]
     latest_major = latest_version.split(".")[0]
     if current_major and latest_major and current_major != latest_major:
         return "Major Gap"
-    return "Minor Gap"
+    return "Patch Gap"
 
 
 def version_order(current_version: str, latest_version: str) -> str:
