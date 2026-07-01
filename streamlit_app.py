@@ -2668,22 +2668,23 @@ def render_release_workspace(config: dict[str, Any]) -> None:
     st.code(f"Input:  {input_path}\nOutput: {output_path}", language="text")
 
     if can_run_operations():
-        st.subheader("Create Team / Product Stream")
-        team_cols = st.columns([1, 1])
-        with team_cols[0]:
-            new_team = st.text_input("New Team Name", placeholder="SourceOne")
-        with team_cols[1]:
-            st.write("")
-            st.write("")
-            create_team_clicked = st.button("Create Team From Current Input", use_container_width=True)
-        if create_team_clicked:
-            ok, message = create_team_snapshot(new_team, config)
-            if ok:
-                clear_dashboard_cache()
-                st.success(message)
-                st.rerun()
-            else:
-                st.error(message)
+        with st.expander("+ Add New Team", expanded=False):
+            st.caption("Use this only when the team/product stream is not already listed above.")
+            team_cols = st.columns([1, 1])
+            with team_cols[0]:
+                new_team = st.text_input("New Team Name", placeholder="CyberRecovery")
+            with team_cols[1]:
+                st.write("")
+                st.write("")
+                create_team_clicked = st.button("Create Team From Current Input", use_container_width=True)
+            if create_team_clicked:
+                ok, message = create_team_snapshot(new_team, config)
+                if ok:
+                    clear_dashboard_cache()
+                    st.success(message)
+                    st.rerun()
+                else:
+                    st.error(message)
 
         st.subheader("Create Release Snapshot")
         form_cols = st.columns([1, 1, 1])
