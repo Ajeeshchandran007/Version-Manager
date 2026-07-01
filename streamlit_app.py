@@ -67,6 +67,7 @@ EMAIL_HTML_FILE = OUTPUT_DIR / "email_preview.html"
 EMAIL_TEXT_FILE = OUTPUT_DIR / "email_preview.txt"
 
 CURRENT_RELEASE_LABEL = "Current"
+CURRENT_RELEASE_DISPLAY_LABEL = "Working / Latest"
 DEFAULT_TEAM_LABEL = "Default"
 RELEASE_OUTPUT_KEYS = {
     "latest_version_json": "latest_versions.json",
@@ -84,6 +85,14 @@ TEAM_INPUT_FILES = {
     "current_version_pdf": "sample_version.pdf",
     "testcase_repository_xlsx": "testcaseRepository.xlsx",
 }
+
+
+def release_display_label(release: str) -> str:
+    return CURRENT_RELEASE_DISPLAY_LABEL if release == CURRENT_RELEASE_LABEL else release
+
+
+def release_value_from_display(label: str) -> str:
+    return CURRENT_RELEASE_LABEL if label == CURRENT_RELEASE_DISPLAY_LABEL else label
 
 ROLE_ADMIN = "Admin"
 ROLE_RELEASE_ENGINEER = "Release Engineer"
@@ -2320,7 +2329,7 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
                 <div class="vm-sidebar-kv">Role<strong>{current_role()}</strong></div>
                 <div class="vm-sidebar-kv">Project<strong>Version Manager</strong></div>
                 <div class="vm-sidebar-kv">Team<strong>{active_team}</strong></div>
-                <div class="vm-sidebar-kv">Release<strong>{active_release}</strong></div>
+                <div class="vm-sidebar-kv">Release<strong>{release_display_label(active_release)}</strong></div>
                 <div class="vm-sidebar-kv">Scope<strong>Version and Security Assessment</strong></div>
                 <div class="vm-sidebar-kv">Workflow<strong>{workflow_status}</strong></div>
                 <div class="vm-sidebar-kv">Last Scan<strong>{last_scan}</strong></div>
@@ -2627,7 +2636,7 @@ def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln
     team = active_team_name()
     release = active_release_name()
     title_prefix = "Enterprise" if "*" in user_team_scope() and role == ROLE_ADMIN else team
-    subtitle_context = f"{team} / {release} release context"
+    subtitle_context = f"{team} / {release_display_label(release)} context"
     if role == ROLE_RELEASE_ENGINEER:
         section_title(f"{title_prefix} Release Dashboard", f"Package readiness, version drift, upgrade planning, and security visibility for {subtitle_context}.")
     elif role == ROLE_QA_ENGINEER:
@@ -2692,7 +2701,7 @@ def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln
 
 def render_dashboard_page(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, metrics_df: pd.DataFrame) -> None:
     render_context_selector("dashboard")
-    st.caption(f"Viewing: {active_team_name()} / {active_release_name()}")
+    st.caption(f"Viewing: {active_team_name()} / {release_display_label(active_release_name())}")
     render_dashboard(current_df, comparison_df, vuln_df, metrics_df)
 
 
@@ -2739,7 +2748,7 @@ def render_release_workspace(config: dict[str, Any]) -> None:
     output_path = active_output_path("comparison_report.json").parent
     metric_cols = st.columns(4)
     metric_cols[0].metric("Active Team", active_team_name())
-    metric_cols[1].metric("Active Release", active_release_name())
+    metric_cols[1].metric("Active Release", release_display_label(active_release_name()))
     metric_cols[2].metric("Known Releases", len(releases))
     metric_cols[3].metric("Input Exists", "Yes" if input_path.exists() else "No")
 
@@ -2771,7 +2780,9 @@ def render_release_workspace(config: dict[str, Any]) -> None:
         with form_cols[0]:
             new_release = st.text_input("New Release Name", placeholder="7.2.11")
         with form_cols[1]:
-            base_release = st.selectbox("Base From", [CURRENT_RELEASE_LABEL, *releases], key="release_workspace_base")
+            base_options = [CURRENT_RELEASE_LABEL, *releases]
+            base_release_display = st.selectbox("Base From", [release_display_label(release) for release in base_options], key="release_workspace_base")
+            base_release = release_value_from_display(base_release_display)
         with form_cols[2]:
             st.write("")
             st.write("")
@@ -2811,14 +2822,16 @@ def render_context_selector(location: str = "dashboard") -> None:
 
     releases = list_releases(selected_team)
     release_options = [CURRENT_RELEASE_LABEL, *releases]
+    release_display_options = [release_display_label(release) for release in release_options]
     current_release = active_release_name() if selected_team == current_team else CURRENT_RELEASE_LABEL
     with release_col:
-        selected_release = st.selectbox(
+        selected_release_display = st.selectbox(
             "Release",
-            release_options,
+            release_display_options,
             index=release_options.index(current_release) if current_release in release_options else 0,
             key=f"{location}_release_selector",
         )
+        selected_release = release_value_from_display(selected_release_display)
 
     if selected_team != st.session_state.get("active_team", DEFAULT_TEAM_LABEL) or selected_release != st.session_state.get("active_release", CURRENT_RELEASE_LABEL):
         st.session_state["active_team"] = selected_team
@@ -2909,15 +2922,18 @@ def render_release_comparison() -> None:
     )
     releases = [CURRENT_RELEASE_LABEL, *list_releases(selected_team)]
     if len(releases) < 2:
-        st.info("Create at least one release snapshot to compare it with Current.")
+        st.info(f"Create at least one release snapshot to compare it with {CURRENT_RELEASE_DISPLAY_LABEL}.")
         return
 
     col1, col2 = st.columns(2)
+    release_display_options = [release_display_label(release) for release in releases]
     with col1:
-        base_release = st.selectbox("Base Release", releases, index=0)
+        base_release_display = st.selectbox("Base Release", release_display_options, index=0)
+        base_release = release_value_from_display(base_release_display)
     with col2:
         target_default = 1 if len(releases) > 1 else 0
-        target_release = st.selectbox("Target Release", releases, index=target_default)
+        target_release_display = st.selectbox("Target Release", release_display_options, index=target_default)
+        target_release = release_value_from_display(target_release_display)
 
     if base_release == target_release:
         st.warning("Select two different releases.")
