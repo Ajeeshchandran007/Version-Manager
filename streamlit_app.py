@@ -2101,7 +2101,7 @@ def require_login(config: dict[str, Any]) -> bool:
                 st.dataframe(pd.DataFrame(role_rows), use_container_width=True, hide_index=True)
             if submitted:
                 for user in configured_users(config):
-                    if username.strip().lower() == user["username"].lower() and password == user["password"]:
+                    if username.strip().lower() == user["username"].lower() and password.strip() == user["password"]:
                         authenticated_user = {
                             "username": user["username"],
                             "role": user["role"],
