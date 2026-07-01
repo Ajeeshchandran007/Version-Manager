@@ -78,6 +78,11 @@ RELEASE_OUTPUT_KEYS = {
     "testcase_impact_xlsx": "Test_Case_Impact_Assessment.xlsx",
     "excel_assessment": "Software_Version_Assessment.xlsx",
 }
+TEAM_INPUT_FILES = {
+    "software_yml": "software.yml",
+    "current_version_pdf": "sample_version.pdf",
+    "testcase_repository_xlsx": "testcaseRepository.xlsx",
+}
 
 ROLE_ADMIN = "Admin"
 ROLE_RELEASE_ENGINEER = "Release Engineer"
@@ -760,7 +765,7 @@ def team_name_to_path_name(name: str) -> str:
 
 
 def list_teams() -> list[str]:
-    teams = {DEFAULT_TEAM_LABEL}
+    teams = set()
     teams_dir = INPUT_DIR / "teams"
     if teams_dir.exists():
         teams.update(
@@ -768,6 +773,8 @@ def list_teams() -> list[str]:
             for path in teams_dir.iterdir()
             if path.is_dir() and (path / "software.yml").exists()
         )
+    if not teams and (INPUT_DIR / "software.yml").exists():
+        teams.add(DEFAULT_TEAM_LABEL)
     if RELEASES_DIR.exists():
         for path in RELEASES_DIR.iterdir():
             if path.is_dir() and not (path / "input" / "software.yml").exists():
@@ -777,13 +784,20 @@ def list_teams() -> list[str]:
 
 def active_team_name() -> str:
     team = st.session_state.get("active_team", DEFAULT_TEAM_LABEL)
-    return team if team in list_teams() else DEFAULT_TEAM_LABEL
+    teams = list_teams()
+    if team in teams:
+        return team
+    return teams[0] if teams else DEFAULT_TEAM_LABEL
+
+
+def team_input_file_path(team: str, filename: str) -> Path:
+    if team == DEFAULT_TEAM_LABEL:
+        return INPUT_DIR / filename
+    return INPUT_DIR / "teams" / team_name_to_path_name(team) / filename
 
 
 def team_input_software_path(team: str) -> Path:
-    if team == DEFAULT_TEAM_LABEL:
-        return INPUT_DIR / "software.yml"
-    return INPUT_DIR / "teams" / team_name_to_path_name(team) / "software.yml"
+    return team_input_file_path(team, "software.yml")
 
 
 def list_releases(team: str | None = None) -> list[str]:
@@ -842,9 +856,14 @@ def active_config(config: dict[str, Any]) -> dict[str, Any]:
     if release == CURRENT_RELEASE_LABEL and team == DEFAULT_TEAM_LABEL:
         return config
     scoped = json.loads(json.dumps(config))
-    scoped.setdefault("input_files", {})["software_yml"] = relpath(
-        team_input_software_path(team) if release == CURRENT_RELEASE_LABEL else release_root(release, team) / "input" / "software.yml"
+    input_files = scoped.setdefault("input_files", {})
+    input_root = (
+        team_input_software_path(team).parent
+        if release == CURRENT_RELEASE_LABEL
+        else release_root(release, team) / "input"
     )
+    for key, filename in TEAM_INPUT_FILES.items():
+        input_files[key] = relpath(input_root / filename)
     output_files = scoped.setdefault("output_files", {})
     output_root = active_output_path("__placeholder__").parent
     for key, filename in RELEASE_OUTPUT_KEYS.items():
@@ -870,12 +889,8 @@ def create_release_snapshot(release_name: str, base_release: str, config: dict[s
     if target.exists():
         return False, f"Release {release} already exists for {team}."
 
-    if base_release == CURRENT_RELEASE_LABEL:
-        source = team_input_software_path(team)
-        if team == DEFAULT_TEAM_LABEL:
-            source = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
-    else:
-        source = release_root(base_release, team) / "input" / "software.yml"
+    source_root = team_input_software_path(team).parent if base_release == CURRENT_RELEASE_LABEL else release_root(base_release, team) / "input"
+    source = source_root / "software.yml"
     if not source.exists():
         return False, f"Base software.yml was not found: {source}"
 
@@ -883,7 +898,10 @@ def create_release_snapshot(release_name: str, base_release: str, config: dict[s
     output_dir = target / "output"
     input_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, input_dir / "software.yml")
+    for filename in TEAM_INPUT_FILES.values():
+        source_file = source_root / filename
+        if source_file.exists():
+            shutil.copy2(source_file, input_dir / filename)
     st.session_state["active_team"] = team
     st.session_state["active_release"] = release
     return True, f"Release {release} created for {team} from {base_release}."
@@ -893,24 +911,31 @@ def create_team_snapshot(team_name: str, config: dict[str, Any]) -> tuple[bool, 
     team = team_name_to_path_name(team_name)
     if not team or team == DEFAULT_TEAM_LABEL:
         return False, "Enter a team name such as SourceOne, DPS, Avamar, or PackageTeam."
-    target = team_input_software_path(team)
+    target_root = team_input_software_path(team).parent
+    target = target_root / "software.yml"
     if target.exists():
         return False, f"Team {team} already has an input software.yml."
-    source = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
+    active_source_root = team_input_software_path(active_team_name()).parent
+    source_root = active_source_root if (active_source_root / "software.yml").exists() else project_path(config.get("input_files", {}).get("software_yml", "Input/teams/SourceOne/software.yml")).parent
+    source = source_root / "software.yml"
     if not source.exists():
         return False, f"Base software.yml was not found: {source}"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
+    target_root.mkdir(parents=True, exist_ok=True)
+    for filename in TEAM_INPUT_FILES.values():
+        source_file = source_root / filename
+        if source_file.exists():
+            shutil.copy2(source_file, target_root / filename)
     st.session_state["active_team"] = team
     st.session_state["active_release"] = CURRENT_RELEASE_LABEL
     return True, f"Team {team} created from current software.yml."
 
 
 def runtime_state() -> dict[str, Any]:
+    config = active_config(load_config())
     return {
-        "config": active_config(load_config()),
+        "config": config,
         "version_fetcher": VersionFetcher(),
-        "pdf_reader": PDFReader(),
+        "pdf_reader": PDFReader(config),
         "server_querier": ServerQuerier(),
         "vulnerability_checker": VulnerabilityChecker(),
     }
@@ -2378,12 +2403,12 @@ def render_operations(config: dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
-    categories = ["ALL", "SourceOne", "DPS", "Other"]
-    configured_default = config.get("default_category", "ALL")
-    default_index = categories.index(configured_default) if configured_default in categories else 0
+    category = "ALL"
+    input_path = project_path(config.get("input_files", {}).get("software_yml", "Input/software.yml"))
     col1, col2, col3 = st.columns([1.1, 1, 1])
     with col1:
-        category = st.selectbox("Software Category", categories, index=default_index)
+        st.metric("Run Context", f"{active_team_name()} / {active_release_name()}")
+        st.caption(f"Input: {input_path}")
     with col2:
         force_refresh = st.toggle(
             "Get Fresh Data",

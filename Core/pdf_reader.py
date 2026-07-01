@@ -297,8 +297,8 @@ def _fetch_from_pdf(pdf_path: str, software_name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 class PDFReader:
-    def __init__(self):
-        config = load_config()
+    def __init__(self, config: dict | None = None):
+        config = config or load_config()
         raw_path = config["input_files"]["current_version_pdf"]
         # Anchor relative paths to the project root (same approach load_config()
         # uses for config.json) so this resolves correctly regardless of the

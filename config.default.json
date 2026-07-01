@@ -17,9 +17,9 @@
     ]
   },
   "input_files": {
-    "software_yml": "Input/software.yml",
-    "current_version_pdf": "Input/sample_version.pdf",
-    "testcase_repository_xlsx": "Input/testcaseRepository.xlsx"
+    "software_yml": "Input/teams/SourceOne/software.yml",
+    "current_version_pdf": "Input/teams/SourceOne/sample_version.pdf",
+    "testcase_repository_xlsx": "Input/teams/SourceOne/testcaseRepository.xlsx"
   },
   "output_files": {
     "latest_version_json": "output/latest_versions.json",
