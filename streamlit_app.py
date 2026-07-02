@@ -1456,10 +1456,22 @@ def normalize_vulnerabilities(data: dict[str, Any]) -> pd.DataFrame:
                 "Risk Level": value(record, "risk_level", default="UNKNOWN").upper(),
                 "CVE Count": len(cves),
                 "Security Assessment": value(record, "assessment", default="No assessment available."),
-                "Source": value(record, "source", default="Unknown"),
+                "Source": vulnerability_source_label(value(record, "source", default="Unknown")),
             }
         )
     return pd.DataFrame(rows)
+
+
+def vulnerability_source_label(source: str) -> str:
+    source_value = str(source or "Unknown").lower()
+    labels = []
+    if "nvd" in source_value and "error" not in source_value:
+        labels.append("NVD")
+    if "local-assessment" in source_value or "error" in source_value:
+        labels.append("NVD unavailable fallback")
+    if "policy" in source_value:
+        labels.append("Policy baseline")
+    return " + ".join(labels) if labels else str(source or "Unknown")
 
 
 def normalize_package_readiness(data: dict[str, Any]) -> pd.DataFrame:
