@@ -2031,7 +2031,7 @@ def render_operation_result(result: dict[str, Any] | None) -> None:
             summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and scan notification were processed."
         elif operation == "package_workflow":
             title = "Package Workflow Completed"
-            summary = "Shared scan outputs and package readiness outputs were refreshed without updating QA validation files."
+            summary = "Shared scan outputs and package readiness outputs were refreshed for the selected release."
         else:
             title = "Full Pipeline Completed"
             summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and email notification were processed."

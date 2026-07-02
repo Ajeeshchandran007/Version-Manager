@@ -185,7 +185,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
                 "Refreshes QA validation and testcase impact without updating package-owned files."
                 if qa_mode
                 else (
-                    "Refreshes package readiness without updating QA validation files."
+                    "Refreshes package readiness and supporting package outputs for the selected release."
                     if package_mode
                     else "Runs the complete admin workflow across shared scan, package readiness, QA validation, and reports."
                 )
