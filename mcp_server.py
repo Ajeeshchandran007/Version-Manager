@@ -42,6 +42,7 @@ from Core.workspace_assessment import (
     build_compatibility_assessment,
     build_package_readiness,
     build_qa_validation,
+    merge_existing_qa_updates,
     save_workspace_outputs,
 )
 from Utils.software_loader import load_software, load_software_metadata
@@ -183,6 +184,14 @@ def _active_output_path(config: dict, output_key: str, fallback_path: str) -> st
         workspace_path = os.path.join(workspace_dir, filename)
         if os.path.exists(workspace_path):
             return workspace_path
+    return _resolve_path(config.get("output_files", {}).get(output_key, fallback_path))
+
+
+def _active_output_write_path(config: dict, output_key: str, fallback_path: str) -> str:
+    workspace_dir = _active_workspace_output_dir(config)
+    filename = os.path.basename(config.get("output_files", {}).get(output_key, fallback_path))
+    if workspace_dir:
+        return os.path.join(workspace_dir, filename)
     return _resolve_path(config.get("output_files", {}).get(output_key, fallback_path))
 
 
@@ -379,7 +388,7 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
                 operation_name=f"latest:{name}",
             )
 
-    out = config["output_files"]["latest_version_json"]
+    out = _active_output_write_path(config, "latest_version_json", "output/latest_versions.json")
     _save_json(latest, out)
     logger.info(f"Latest versions saved → {_resolve_path(out)}")
 
@@ -397,7 +406,7 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
                 record["last_scanned"] = scanned_at
             current[name] = record
 
-    out = config["output_files"]["current_version_json"]
+    out = _active_output_write_path(config, "current_version_json", "output/current_versions.json")
     _save_json(current, out)
     logger.info(f"Current versions saved → {_resolve_path(out)}")
 
@@ -406,7 +415,7 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
     with observed_step("compare_versions", trace_id, category=category, total=len(software_list)):
         report = compare(latest, current)
 
-    out = config["output_files"]["comparison_report_json"]
+    out = _active_output_write_path(config, "comparison_report_json", "output/comparison_report.json")
     _save_json(report, out)
     logger.info(f"Comparison report saved → {_resolve_path(out)}")
 
@@ -415,7 +424,7 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
     with observed_step("check_vulnerabilities", trace_id, category=category, total=len(software_list)):
         vulnerabilities = await _build_vulnerability_report(state, report, force_refresh=force_refresh)
 
-    out = _vulnerability_path(config)
+    out = _active_output_write_path(config, "vulnerability_report_json", _vulnerability_path(config))
     _save_json(vulnerabilities, out)
     logger.info(f"Vulnerability report saved -> {_resolve_path(out)}")
 
@@ -426,13 +435,13 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
             report,
             latest,
             vulnerabilities,
-            _resolve_path(_package_readiness_path(config)),
-            _resolve_path(_qa_validation_path(config)),
+            _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config)),
+            _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config)),
             software_metadata,
             vendor_requirements,
         )
-    package_path = _resolve_path(_package_readiness_path(config))
-    qa_path = _resolve_path(_qa_validation_path(config))
+    package_path = _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config))
+    qa_path = _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config))
     logger.info(f"Package readiness saved -> {package_path}")
     logger.info(f"QA validation saved -> {qa_path}")
 
@@ -441,16 +450,16 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
         testcase_impact = save_testcase_impact_outputs(
             report,
             _resolve_path(_testcase_repository_path(config)),
-            _resolve_path(_testcase_impact_path(config)),
-            _resolve_path(_testcase_impact_excel_path(config)),
+            _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config)),
+            _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config)),
         )
-    testcase_path = _resolve_path(_testcase_impact_path(config))
-    testcase_excel_path = _resolve_path(_testcase_impact_excel_path(config))
+    testcase_path = _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config))
+    testcase_excel_path = _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config))
     logger.info(f"Test case impact saved -> {testcase_path}")
     logger.info(f"Test case impact workbook saved -> {testcase_excel_path}")
 
     logger.info("Step 7: Generating Excel assessment workbook...")
-    excel_path = _resolve_path(_excel_assessment_path(config))
+    excel_path = _active_output_write_path(config, "excel_assessment", _excel_assessment_path(config))
     generate_excel_report(report, vulnerabilities, excel_path)
     logger.info(f"Excel assessment saved -> {excel_path}")
 
@@ -597,7 +606,7 @@ async def fetch_latest_versions(ctx: Context, category: str = "ALL", force_refre
         await ctx.info(f"Searching: {name}")
         latest[name] = await fetcher.fetch(name, force_refresh=force_refresh)
 
-    out = config["output_files"]["latest_version_json"]
+    out = _active_output_write_path(config, "latest_version_json", "output/latest_versions.json")
     _save_json(latest, out)
 
     updates = {k: v for k, v in latest.items() if v.get("Build Version")}
@@ -657,7 +666,7 @@ async def fetch_current_versions(ctx: Context, category: str = "ALL") -> str:
             record["last_scanned"] = scanned_at
         current[name] = record
 
-    out = config["output_files"]["current_version_json"]
+    out = _active_output_write_path(config, "current_version_json", "output/current_versions.json")
     _save_json(current, out)
 
     from_server = [n for n, v in current.items() if v.get("source") == "live server"]
@@ -684,8 +693,8 @@ async def compare_versions(ctx: Context, latest: dict | None = None, current: di
     state  = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
 
-    latest_path  = config["output_files"]["latest_version_json"]
-    current_path = config["output_files"]["current_version_json"]
+    latest_path = _active_output_path(config, "latest_version_json", config["output_files"]["latest_version_json"])
+    current_path = _active_output_path(config, "current_version_json", config["output_files"]["current_version_json"])
 
     if latest is None or current is None:
         # IMPORTANT: check existence via the same resolution logic used to save,
@@ -702,7 +711,7 @@ async def compare_versions(ctx: Context, latest: dict | None = None, current: di
     await ctx.info("Comparing versions...")
     report = compare(latest, current)
 
-    out = config["output_files"]["comparison_report_json"]
+    out = _active_output_write_path(config, "comparison_report_json", "output/comparison_report.json")
     _save_json(report, out)
 
     return _json_response(report)
@@ -742,7 +751,7 @@ async def save_vulnerability_report(ctx: Context, vulnerabilities: dict) -> str:
     """Saves aggregate vulnerability findings to output/vulnerability_report.json."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    out = _vulnerability_path(config)
+    out = _active_output_write_path(config, "vulnerability_report_json", _vulnerability_path(config))
     _save_json(vulnerabilities, out)
     return _json_response({
         "saved": True,
@@ -756,15 +765,15 @@ async def generate_excel_assessment(ctx: Context) -> str:
     """Generates output/Software_Version_Assessment.xlsx from saved reports."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    comparison_path = config["output_files"]["comparison_report_json"]
-    vulnerability_path = _vulnerability_path(config)
+    comparison_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
+    vulnerability_path = _active_output_path(config, "vulnerability_report_json", _vulnerability_path(config))
 
     if not _path_exists(comparison_path):
         return f"Comparison report not found at {_resolve_path(comparison_path)}. Run compare_versions first."
     if not _path_exists(vulnerability_path):
         return f"Vulnerability report not found at {_resolve_path(vulnerability_path)}. Run check_vulnerabilities first."
 
-    excel_path = _resolve_path(_excel_assessment_path(config))
+    excel_path = _active_output_write_path(config, "excel_assessment", _excel_assessment_path(config))
     generate_excel_report(_load_json(comparison_path), _load_json(vulnerability_path), excel_path)
     return _json_response({"saved": True, "path": excel_path})
 
@@ -782,9 +791,9 @@ async def assess_package_readiness(
     """Generates package readiness from supplied state or saved workflow reports."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    comparison_path = config["output_files"]["comparison_report_json"]
-    latest_path = config["output_files"]["latest_version_json"]
-    vulnerability_path = _vulnerability_path(config)
+    comparison_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
+    latest_path = _active_output_path(config, "latest_version_json", config["output_files"]["latest_version_json"])
+    vulnerability_path = _active_output_path(config, "vulnerability_report_json", _vulnerability_path(config))
 
     if comparison is None and not _path_exists(comparison_path):
         return f"Comparison report not found at {_resolve_path(comparison_path)}. Run compare_versions first."
@@ -797,7 +806,7 @@ async def assess_package_readiness(
         _load_json(vulnerability_path) if _path_exists(vulnerability_path) else {}
     )
     readiness = build_package_readiness(comparison, latest, vulnerabilities)
-    out = _package_readiness_path(config)
+    out = _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config))
     _save_json(readiness, out)
     return _json_response({
         "saved": True,
@@ -829,6 +838,10 @@ async def get_active_config(ctx: Context, category: str | None = None) -> str:
         "project_root": _PROJECT_ROOT,
         "input_files": paths,
         "output_files": config.get("output_files", {}),
+        "active_output_files": {
+            name: _active_output_write_path(config, name, path)
+            for name, path in config.get("output_files", {}).items()
+        },
         "software_count": len(software),
         "software": software,
     })
@@ -959,9 +972,9 @@ async def check_compatibility(
     """Generates compatibility validation data from supplied state or saved reports."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    comparison_path = config["output_files"]["comparison_report_json"]
-    latest_path = config["output_files"]["latest_version_json"]
-    package_path = _package_readiness_path(config)
+    comparison_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
+    latest_path = _active_output_path(config, "latest_version_json", config["output_files"]["latest_version_json"])
+    package_path = _active_output_path(config, "package_readiness_json", _package_readiness_path(config))
 
     if comparison is None and not _path_exists(comparison_path):
         return f"Comparison report not found at {_resolve_path(comparison_path)}. Run compare_versions first."
@@ -990,9 +1003,9 @@ async def generate_qa_validation(
     """Generates QA validation results from supplied state or saved workflow reports."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    comparison_path = config["output_files"]["comparison_report_json"]
-    latest_path = config["output_files"]["latest_version_json"]
-    package_path = _package_readiness_path(config)
+    comparison_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
+    latest_path = _active_output_path(config, "latest_version_json", config["output_files"]["latest_version_json"])
+    package_path = _active_output_path(config, "package_readiness_json", _package_readiness_path(config))
 
     if comparison is None and not _path_exists(comparison_path):
         return f"Comparison report not found at {_resolve_path(comparison_path)}. Run compare_versions first."
@@ -1005,7 +1018,8 @@ async def generate_qa_validation(
     vendor_requirements = await _resolve_vendor_compatibility_requirements(comparison, latest)
     metadata = load_software_metadata(config["input_files"]["software_yml"], config.get("default_category", "ALL"))
     qa_validation = build_qa_validation(comparison, readiness, metadata, vendor_requirements)
-    out = _qa_validation_path(config)
+    out = _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config))
+    qa_validation = merge_existing_qa_updates(qa_validation, out)
     _save_json(qa_validation, out)
     return _json_response({
         "saved": True,
@@ -1163,7 +1177,7 @@ async def save_package_readiness(ctx: Context, package_readiness: dict) -> str:
     """Saves package readiness results to output/package_readiness.json."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    out = _package_readiness_path(config)
+    out = _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config))
     _save_json(package_readiness, out)
     return _json_response({"saved": True, "path": _resolve_path(out), "total": len(package_readiness)})
 
@@ -1173,7 +1187,7 @@ async def save_qa_validation(ctx: Context, qa_validation: dict) -> str:
     """Saves QA validation results to output/qa_validation.json."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    out = _qa_validation_path(config)
+    out = _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config))
     _save_json(qa_validation, out)
     return _json_response({"saved": True, "path": _resolve_path(out), "total": len(qa_validation)})
 
@@ -1183,7 +1197,7 @@ async def generate_testcase_impact(ctx: Context, comparison: dict | None = None)
     """Maps software requiring updates to recommended QA test cases."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    comparison_path = config["output_files"]["comparison_report_json"]
+    comparison_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
 
     if comparison is None and not _path_exists(comparison_path):
         return f"Comparison report not found at {_resolve_path(comparison_path)}. Run compare_versions first."
@@ -1192,13 +1206,13 @@ async def generate_testcase_impact(ctx: Context, comparison: dict | None = None)
     impact = save_testcase_impact_outputs(
         comparison,
         _resolve_path(_testcase_repository_path(config)),
-        _resolve_path(_testcase_impact_path(config)),
-        _resolve_path(_testcase_impact_excel_path(config)),
+        _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config)),
+        _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config)),
     )
     return _json_response({
         "saved": True,
-        "path": _resolve_path(_testcase_impact_path(config)),
-        "excel_path": _resolve_path(_testcase_impact_excel_path(config)),
+        "path": _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config)),
+        "excel_path": _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config)),
         "summary": impact.get("summary", {}),
         "testcase_impact": impact,
     })
@@ -1262,8 +1276,8 @@ async def send_notification(ctx: Context, report: dict | None = None) -> str:
     """
     state       = ctx.request_context.lifespan_context
     config      = _refresh_state_config(state)
-    report_path = config["output_files"]["comparison_report_json"]
-    vulnerability_path = _vulnerability_path(config)
+    report_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
+    vulnerability_path = _active_output_path(config, "vulnerability_report_json", _vulnerability_path(config))
 
     report_body = None
     if report and report.get("body"):
