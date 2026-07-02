@@ -687,6 +687,8 @@ def save_qa_manual_update(
     software_name: str,
     installation_status: str,
     test_result: str,
+    test_case_count: int,
+    test_cases_executed: int,
     notes: str,
     test_date: Any,
     tested_by: str,
@@ -707,8 +709,19 @@ def save_qa_manual_update(
         evidence_path = str(target)
 
     record = data[software_name]
+    test_case_count = max(safe_int(test_case_count), 0)
+    test_cases_executed = max(safe_int(test_cases_executed), 0)
+    if test_case_count:
+        test_cases_executed = min(test_cases_executed, test_case_count)
+        coverage_pct = round((test_cases_executed / test_case_count) * 100, 1)
+        coverage_label = f"{coverage_pct:g}%"
+    else:
+        coverage_label = "Not Required"
     record["Installation Status"] = installation_status
     record["Test Result"] = test_result
+    record["Test Case Count"] = test_case_count
+    record["Test Cases Executed"] = test_cases_executed
+    record["Test Case Coverage %"] = coverage_label
     record["Test Notes"] = notes.strip() or record.get("Test Notes", "")
     record["Test Date"] = str(test_date)
     record["Tested By"] = tested_by.strip() or current_user().get("username", "unknown")
@@ -1143,6 +1156,13 @@ def value(record: dict[str, Any], *keys: str, default: Any = "") -> Any:
     return default
 
 
+def safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_ts(raw: str | None) -> datetime | None:
     if not raw:
         return None
@@ -1402,6 +1422,13 @@ def normalize_package_readiness(data: dict[str, Any]) -> pd.DataFrame:
 def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
     for name, record in data.items():
+        test_case_count = safe_int(value(record, "Test Case Count", default=0))
+        test_cases_executed = min(safe_int(value(record, "Test Cases Executed", default=0)), test_case_count) if test_case_count else safe_int(value(record, "Test Cases Executed", default=0))
+        test_case_coverage = (
+            f"{((test_cases_executed / test_case_count) * 100):.1f}%".replace(".0%", "%")
+            if test_case_count
+            else "Not Required"
+        )
         rows.append(
             {
                 "Software Name": value(record, "Software Name", default=name),
@@ -1422,6 +1449,9 @@ def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
                 "Requirement Source URL": value(record, "Requirement Source URL", default=""),
                 "Requirement Confidence": value(record, "Requirement Confidence", default="Not available"),
                 "Last Verified": value(record, "Last Verified", default="Not available"),
+                "Test Case Count": test_case_count,
+                "Test Cases Executed": test_cases_executed,
+                "Test Case Coverage %": test_case_coverage,
                 "Test Notes": value(record, "Test Notes"),
                 "Test Date": value(record, "Test Date", default=""),
                 "Tested By": value(record, "Tested By", default=""),
@@ -2162,6 +2192,8 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         "Test Result",
         "Environment Readiness",
         "Test Case Count",
+        "Test Cases Executed",
+        "Test Case Coverage %",
         "Test Coverage",
         "Test Date",
         "Tested By",
@@ -2172,7 +2204,21 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     testcase_impact_excel_file = active_output_path("Test_Case_Impact_Assessment.xlsx")
     impact = load_json(str(testcase_impact_file), file_mtime(testcase_impact_file))
     impacted = impact.get("impacted_software", {}) if isinstance(impact, dict) else {}
-    qa_df["Test Case Count"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Case Count", 0))
+    qa_df["Test Case Count"] = qa_df.apply(
+        lambda row: safe_int(row.get("Test Case Count") or impacted.get(row["Software Name"], {}).get("Test Case Count", 0)),
+        axis=1,
+    )
+    qa_df["Test Cases Executed"] = qa_df["Test Cases Executed"].map(safe_int)
+    qa_df["Test Cases Executed"] = qa_df.apply(
+        lambda row: min(safe_int(row["Test Cases Executed"]), safe_int(row["Test Case Count"])) if safe_int(row["Test Case Count"]) else safe_int(row["Test Cases Executed"]),
+        axis=1,
+    )
+    qa_df["Test Case Coverage %"] = qa_df.apply(
+        lambda row: f"{((safe_int(row['Test Cases Executed']) / safe_int(row['Test Case Count'])) * 100):.1f}%".replace(".0%", "%")
+        if safe_int(row["Test Case Count"])
+        else "Not Required",
+        axis=1,
+    )
     qa_df["Test Coverage"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
     searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
 
@@ -2221,6 +2267,24 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             "Test Result",
             ["NOT TESTED", "PASS", "FAIL", "WARNING", "BASELINE VERIFIED"],
         )
+        selected_record = qa_df[qa_df["Software Name"] == software_name].iloc[0]
+        selected_test_case_count = safe_int(selected_record.get("Test Case Count"))
+        current_executed = safe_int(selected_record.get("Test Cases Executed"))
+        executed_cols = st.columns([1, 1])
+        executed_cols[0].number_input("Test Case Count", value=selected_test_case_count, min_value=0, disabled=True)
+        test_cases_executed = executed_cols[1].number_input(
+            "Test Cases Executed",
+            min_value=0,
+            max_value=selected_test_case_count if selected_test_case_count else None,
+            value=min(current_executed, selected_test_case_count) if selected_test_case_count else current_executed,
+            step=1,
+        )
+        coverage_label = (
+            f"{((test_cases_executed / selected_test_case_count) * 100):.1f}%".replace(".0%", "%")
+            if selected_test_case_count
+            else "Not Required"
+        )
+        st.caption(f"Calculated test case coverage: {coverage_label}")
         notes = st.text_area("QA Notes", placeholder="Add install result, validation notes, known issues, or rollback details.")
         date_cols = st.columns([1, 1, 1])
         test_date = date_cols[0].date_input("Test Date", value=datetime.now().date())
@@ -2233,6 +2297,8 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                 software_name,
                 installation_status,
                 test_result,
+                selected_test_case_count,
+                test_cases_executed,
                 notes,
                 test_date,
                 tested_by,
