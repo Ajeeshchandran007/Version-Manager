@@ -33,6 +33,7 @@ from App.qa_history import (
     append_qa_history,
     build_qa_signoff_history_record,
     calculate_qa_summary,
+    executed_count,
     history_dataframe,
     load_qa_history,
 )
@@ -702,7 +703,9 @@ def save_qa_manual_update(
     installation_status: str,
     test_result: str,
     test_case_count: int,
-    test_cases_executed: int,
+    test_cases_passed: int,
+    test_cases_failed: int,
+    test_cases_blocked: int,
     notes: str,
     test_date: Any,
     tested_by: str,
@@ -724,7 +727,10 @@ def save_qa_manual_update(
 
     record = data[software_name]
     test_case_count = max(safe_int(test_case_count), 0)
-    test_cases_executed = max(safe_int(test_cases_executed), 0)
+    test_cases_passed = max(safe_int(test_cases_passed), 0)
+    test_cases_failed = max(safe_int(test_cases_failed), 0)
+    test_cases_blocked = max(safe_int(test_cases_blocked), 0)
+    test_cases_executed = test_cases_passed + test_cases_failed + test_cases_blocked
     if test_case_count:
         test_cases_executed = min(test_cases_executed, test_case_count)
         coverage_pct = round((test_cases_executed / test_case_count) * 100, 1)
@@ -734,6 +740,9 @@ def save_qa_manual_update(
     record["Installation Status"] = installation_status
     record["Test Result"] = test_result
     record["Test Case Count"] = test_case_count
+    record["Test Cases Passed"] = test_cases_passed
+    record["Test Cases Failed"] = test_cases_failed
+    record["Test Cases Blocked / Not Tested"] = test_cases_blocked
     record["Test Cases Executed"] = test_cases_executed
     record["Test Case Coverage %"] = coverage_label
     record["Test Notes"] = notes.strip() or record.get("Test Notes", "")
@@ -1437,7 +1446,13 @@ def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
     for name, record in data.items():
         test_case_count = safe_int(value(record, "Test Case Count", default=0))
-        test_cases_executed = min(safe_int(value(record, "Test Cases Executed", default=0)), test_case_count) if test_case_count else safe_int(value(record, "Test Cases Executed", default=0))
+        test_cases_passed = safe_int(value(record, "Test Cases Passed", default=0))
+        test_cases_failed = safe_int(value(record, "Test Cases Failed", default=0))
+        test_cases_blocked = safe_int(value(record, "Test Cases Blocked / Not Tested", default=0))
+        calculated_executed = test_cases_passed + test_cases_failed + test_cases_blocked
+        raw_executed = safe_int(value(record, "Test Cases Executed", default=0))
+        test_cases_executed = calculated_executed or raw_executed
+        test_cases_executed = min(test_cases_executed, test_case_count) if test_case_count else test_cases_executed
         test_case_coverage = (
             f"{((test_cases_executed / test_case_count) * 100):.1f}%".replace(".0%", "%")
             if test_case_count
@@ -1464,6 +1479,9 @@ def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
                 "Requirement Confidence": value(record, "Requirement Confidence", default="Not available"),
                 "Last Verified": value(record, "Last Verified", default="Not available"),
                 "Test Case Count": test_case_count,
+                "Test Cases Passed": test_cases_passed,
+                "Test Cases Failed": test_cases_failed,
+                "Test Cases Blocked / Not Tested": test_cases_blocked,
                 "Test Cases Executed": test_cases_executed,
                 "Test Case Coverage %": test_case_coverage,
                 "Test Notes": value(record, "Test Notes"),
@@ -2197,10 +2215,13 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     columns = [
         "Software Name",
         "Package Version",
-        "Installation Status",
-        "Test Result",
+        "Deployment Status",
+        "Overall QA Result",
         "Environment Readiness",
         "Test Case Count",
+        "Test Cases Passed",
+        "Test Cases Failed",
+        "Test Cases Blocked / Not Tested",
         "Test Cases Executed",
         "Test Case Coverage %",
         "Test Case Source",
@@ -2217,11 +2238,9 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         lambda row: safe_int(row.get("Test Case Count") or impacted.get(row["Software Name"], {}).get("Test Case Count", 0)),
         axis=1,
     )
-    qa_df["Test Cases Executed"] = qa_df["Test Cases Executed"].map(safe_int)
-    qa_df["Test Cases Executed"] = qa_df.apply(
-        lambda row: min(safe_int(row["Test Cases Executed"]), safe_int(row["Test Case Count"])) if safe_int(row["Test Case Count"]) else safe_int(row["Test Cases Executed"]),
-        axis=1,
-    )
+    for field in ["Test Cases Passed", "Test Cases Failed", "Test Cases Blocked / Not Tested", "Test Cases Executed"]:
+        qa_df[field] = qa_df[field].map(safe_int)
+    qa_df["Test Cases Executed"] = qa_df.apply(executed_count, axis=1)
     qa_df["Test Case Coverage %"] = qa_df.apply(
         lambda row: f"{((safe_int(row['Test Cases Executed']) / safe_int(row['Test Case Count'])) * 100):.1f}%".replace(".0%", "%")
         if safe_int(row["Test Case Count"])
@@ -2229,6 +2248,8 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         axis=1,
     )
     qa_df["Test Case Source"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
+    qa_df["Deployment Status"] = qa_df["Installation Status"]
+    qa_df["Overall QA Result"] = qa_df["Test Result"]
     qa_summary = calculate_qa_summary(qa_df)
     qa_output_dir = active_output_path("__placeholder__").parent
     latest_signoff = load_qa_signoff(qa_output_dir)
@@ -2256,7 +2277,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     testcase_summary_cols[4].metric("Partially Tested", qa_summary["partially_tested"])
     testcase_summary_cols[5].metric("Not Started", qa_summary["not_tested"])
 
-    searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
+    searchable_table(qa_df[columns], "qa_validation", ["Deployment Status", "Overall QA Result", "Environment Readiness"])
 
     testcase_df = normalize_testcase_impact(impact)
     st.subheader("Recommended Test Cases for Updates")
@@ -2300,7 +2321,14 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     current_installation = str(selected_record.get("Installation Status") or "Not Tested")
     current_result = str(selected_record.get("Test Result") or "NOT TESTED")
     selected_test_case_count = safe_int(selected_record.get("Test Case Count"))
+    current_passed = safe_int(selected_record.get("Test Cases Passed"))
+    current_failed = safe_int(selected_record.get("Test Cases Failed"))
+    current_blocked = safe_int(selected_record.get("Test Cases Blocked / Not Tested"))
     current_executed = safe_int(selected_record.get("Test Cases Executed"))
+    if current_executed and not (current_passed or current_failed or current_blocked):
+        current_passed = current_executed if current_result in {"PASS", "BASELINE VERIFIED"} else 0
+        current_failed = current_executed if current_result == "FAIL" else 0
+        current_blocked = current_executed if current_result in {"WARNING", "NOT TESTED"} else 0
     with st.form("manual_qa_update_form"):
         form_cols = st.columns([1, 1])
         installation_status = form_cols[0].selectbox(
@@ -2315,16 +2343,35 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             index=result_options.index(current_result) if current_result in result_options else 0,
             key=f"qa_result_{selected_key}",
         )
-        executed_cols = st.columns([1, 1])
+        executed_cols = st.columns([1, 1, 1, 1])
         executed_cols[0].number_input("Test Case Count", value=selected_test_case_count, min_value=0, disabled=True, key=f"qa_count_{selected_key}")
-        test_cases_executed = executed_cols[1].number_input(
-            "Test Cases Executed",
+        test_cases_passed = executed_cols[1].number_input(
+            "Test Cases Passed",
             min_value=0,
             max_value=selected_test_case_count if selected_test_case_count else None,
-            value=min(current_executed, selected_test_case_count) if selected_test_case_count else current_executed,
+            value=min(current_passed, selected_test_case_count) if selected_test_case_count else current_passed,
             step=1,
-            key=f"qa_executed_{selected_key}",
+            key=f"qa_passed_{selected_key}",
         )
+        remaining_after_pass = max(selected_test_case_count - test_cases_passed, 0) if selected_test_case_count else None
+        test_cases_failed = executed_cols[2].number_input(
+            "Test Cases Failed",
+            min_value=0,
+            max_value=remaining_after_pass,
+            value=min(current_failed, remaining_after_pass) if remaining_after_pass is not None else current_failed,
+            step=1,
+            key=f"qa_failed_{selected_key}",
+        )
+        remaining_after_fail = max(selected_test_case_count - test_cases_passed - test_cases_failed, 0) if selected_test_case_count else None
+        test_cases_blocked = executed_cols[3].number_input(
+            "Blocked / Not Tested",
+            min_value=0,
+            max_value=remaining_after_fail,
+            value=min(current_blocked, remaining_after_fail) if remaining_after_fail is not None else current_blocked,
+            step=1,
+            key=f"qa_blocked_{selected_key}",
+        )
+        test_cases_executed = test_cases_passed + test_cases_failed + test_cases_blocked
         coverage_label = (
             f"{((test_cases_executed / selected_test_case_count) * 100):.1f}%".replace(".0%", "%")
             if selected_test_case_count
@@ -2349,7 +2396,9 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                 installation_status,
                 test_result,
                 selected_test_case_count,
-                test_cases_executed,
+                test_cases_passed,
+                test_cases_failed,
+                test_cases_blocked,
                 notes,
                 test_date,
                 tested_by,

@@ -21,6 +21,18 @@ def _coverage(executed: int, total: int) -> float:
     return round((executed / total) * 100, 1) if total else 0.0
 
 
+def executed_count(row: Any) -> int:
+    total = _safe_int(row.get("Test Case Count")) if hasattr(row, "get") else 0
+    passed = _safe_int(row.get("Test Cases Passed")) if hasattr(row, "get") else 0
+    failed = _safe_int(row.get("Test Cases Failed")) if hasattr(row, "get") else 0
+    blocked = _safe_int(row.get("Test Cases Blocked / Not Tested")) if hasattr(row, "get") else 0
+    calculated = passed + failed + blocked
+    if calculated:
+        return min(calculated, total) if total else calculated
+    existing = _safe_int(row.get("Test Cases Executed")) if hasattr(row, "get") else 0
+    return min(existing, total) if total else existing
+
+
 def calculate_qa_summary(qa_df: pd.DataFrame) -> dict[str, Any]:
     if qa_df.empty:
         return {
@@ -37,13 +49,13 @@ def calculate_qa_summary(qa_df: pd.DataFrame) -> dict[str, Any]:
         }
 
     total_cases = int(qa_df.get("Test Case Count", pd.Series(dtype=int)).map(_safe_int).sum())
-    executed_cases = int(qa_df.get("Test Cases Executed", pd.Series(dtype=int)).map(_safe_int).sum())
+    executed_cases = int(qa_df.apply(executed_count, axis=1).sum())
     result_counts = qa_df.get("Test Result", pd.Series(dtype=str)).astype(str).str.upper().value_counts().to_dict()
 
     counts = qa_df.apply(
         lambda row: (
             _safe_int(row.get("Test Case Count")),
-            _safe_int(row.get("Test Cases Executed")),
+            executed_count(row),
         ),
         axis=1,
     )
@@ -91,13 +103,16 @@ def build_qa_signoff_history_record(signoff: dict[str, Any], qa_df: pd.DataFrame
     software_results: list[dict[str, Any]] = []
     for _, row in qa_df.iterrows():
         total = _safe_int(row.get("Test Case Count"))
-        executed = min(_safe_int(row.get("Test Cases Executed")), total) if total else _safe_int(row.get("Test Cases Executed"))
+        executed = executed_count(row)
         software_results.append(
             {
                 "software": str(row.get("Software Name", "")),
                 "installation_status": str(row.get("Installation Status", "")),
                 "test_result": str(row.get("Test Result", "")),
                 "test_case_count": total,
+                "test_cases_passed": _safe_int(row.get("Test Cases Passed")),
+                "test_cases_failed": _safe_int(row.get("Test Cases Failed")),
+                "test_cases_blocked_not_tested": _safe_int(row.get("Test Cases Blocked / Not Tested")),
                 "test_cases_executed": executed,
                 "coverage_percent": _coverage(executed, total),
                 "tested_by": str(row.get("Tested By", "")),
