@@ -148,6 +148,10 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
         else:
             st.error(f"Schedule was not saved: {schedule_result.get('error')}")
 
+    st.markdown("<div style='height: 32px;'></div>", unsafe_allow_html=True)
+    st.subheader("Manual Actions")
+    st.caption("Run an on-demand scan, refresh your role workflow, or send a role-specific report email.")
+
     role = current_role()
     qa_mode = role == ROLE_QA_ENGINEER
     package_mode = role == ROLE_RELEASE_ENGINEER
@@ -171,8 +175,8 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     workflow_cols = st.columns(3)
     workflow_actions = [
         (
-            "Shared Discovery",
-            "Run Shared Scan",
+            "Version Scan",
+            "Run Scan",
             "Finds latest/current versions, compares, checks vulnerabilities, generates the summary workbook, and sends the scan notification.",
             "Running shared scan and scan notification...",
             lambda: ctx.run_async(ctx.trigger_shared_scan(category, force_refresh)),
