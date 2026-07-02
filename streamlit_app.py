@@ -2022,10 +2022,16 @@ def render_operation_result(result: dict[str, Any] | None) -> None:
     summary = "The selected operation finished successfully."
     next_action = "Review the refreshed dashboard pages."
 
-    if operation == "full_pipeline":
+    if operation in {"full_pipeline", "shared_workflow", "package_workflow", "qa_workflow"}:
         if current_role() == ROLE_QA_ENGINEER:
             title = "Validation Workflow Completed"
-            summary = "Compatibility and QA validation outputs were refreshed by the controlled backend workflow."
+            summary = "Shared scan outputs and QA validation outputs were refreshed by the controlled backend workflow."
+        elif operation == "shared_workflow":
+            title = "Shared Scan Completed"
+            summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and scan notification were processed."
+        elif operation == "package_workflow":
+            title = "Package Workflow Completed"
+            summary = "Shared scan outputs and package readiness outputs were refreshed without updating QA validation files."
         else:
             title = "Full Pipeline Completed"
             summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and email notification were processed."

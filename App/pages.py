@@ -161,6 +161,12 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
         if qa_mode
         else ("Send Package Report Email" if package_mode else "Send Version Report Email")
     )
+    if qa_mode:
+        role_workflow_action = lambda: ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh))
+    elif package_mode:
+        role_workflow_action = lambda: ctx.run_async(ctx.trigger_package_workflow(category, force_refresh))
+    else:
+        role_workflow_action = lambda: ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
 
     workflow_cols = st.columns(3)
     workflow_actions = [
@@ -185,15 +191,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
                 )
             ),
             f"Running {role_workflow_label.lower()}...",
-            (
-                lambda: ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh))
-                if qa_mode
-                else (
-                    lambda: ctx.run_async(ctx.trigger_package_workflow(category, force_refresh))
-                    if package_mode
-                    else lambda: ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
-                )
-            ),
+            role_workflow_action,
             False,
         ),
         (
