@@ -2233,7 +2233,6 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     qa_output_dir = active_output_path("__placeholder__").parent
     latest_signoff = load_qa_signoff(qa_output_dir)
 
-    st.subheader("QA Validation Dashboard")
     result_counts = qa_df["Test Result"].value_counts().to_dict()
     validation_cols = st.columns(6)
     validation_cols[0].metric("Total Software", qa_summary["total_software"])
