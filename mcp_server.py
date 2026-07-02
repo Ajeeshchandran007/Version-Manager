@@ -36,7 +36,7 @@ from Core.excel_reporter import generate_excel_report
 from Core.notifier import build_html_report, build_report, count_actionable_updates, get_last_email_error, is_actionable_update, send_email
 from Core.observability import emit_event, new_trace_id, observed_step
 from Core.reliability import with_retries
-from Core.testcase_impact import save_testcase_impact_outputs
+from Core.testcase_impact import load_testcase_repository, save_testcase_impact_outputs
 from Core.vulnerability_checker import VulnerabilityChecker, local_assessment
 from Core.workspace_assessment import (
     build_compatibility_assessment,
@@ -110,6 +110,40 @@ def _testcase_impact_path(config: dict) -> str:
 
 def _testcase_impact_excel_path(config: dict) -> str:
     return config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx")
+
+
+def _file_info(path: str) -> dict[str, Any]:
+    resolved = _resolve_path(path)
+    exists = os.path.exists(resolved)
+    info: dict[str, Any] = {
+        "path": resolved,
+        "exists": exists,
+    }
+    if exists:
+        stat = os.stat(resolved)
+        info.update({
+            "size_bytes": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        })
+    return info
+
+
+def _safe_load_json(path: str) -> dict:
+    return _load_json(path) if _path_exists(path) else {}
+
+
+def _count_by_field(records: dict[str, dict[str, Any]], field: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records.values():
+        value = str(record.get(field) or "UNKNOWN").upper()
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _is_blocked_package(record: dict[str, Any]) -> bool:
+    status = str(record.get("Package Readiness") or "").lower()
+    blocker = str(record.get("Blocker") or "").strip()
+    return bool(blocker) or "block" in status or "review" in status
 
 
 def _assess_vulnerabilities(
@@ -727,6 +761,143 @@ async def assess_package_readiness(
 
 
 @mcp.tool()
+async def get_active_config(ctx: Context, category: str | None = None) -> str:
+    """Returns the active VersionManager config paths and selected software list."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    selected_category = category or config.get("default_category", "ALL")
+    software_yml = config["input_files"]["software_yml"]
+    software = load_software(software_yml, selected_category)
+    paths = {
+        "software_yml": _file_info(software_yml),
+        "current_version_pdf": _file_info(config["input_files"].get("current_version_pdf", "")),
+        "testcase_repository_xlsx": _file_info(_testcase_repository_path(config)),
+        "output_directory": _resolve_path("output"),
+    }
+    return _json_response({
+        "category": selected_category,
+        "project_root": _PROJECT_ROOT,
+        "input_files": paths,
+        "output_files": config.get("output_files", {}),
+        "software_count": len(software),
+        "software": software,
+    })
+
+
+@mcp.tool()
+async def get_package_readiness_summary(ctx: Context) -> str:
+    """Summarizes saved package readiness results without regenerating reports."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    path = _package_readiness_path(config)
+    readiness = _safe_load_json(path)
+    if not readiness:
+        return _json_response({
+            "available": False,
+            "path": _resolve_path(path),
+            "message": "Package readiness report not found. Run assess_package_readiness or run_full_pipeline first.",
+        })
+    statuses = _count_by_field(readiness, "Package Readiness")
+    impact = _count_by_field(readiness, "Upgrade Impact")
+    blocked = {name: item for name, item in readiness.items() if _is_blocked_package(item)}
+    return _json_response({
+        "available": True,
+        "path": _resolve_path(path),
+        "total": len(readiness),
+        "status_counts": statuses,
+        "impact_counts": impact,
+        "blocked_count": len(blocked),
+        "blocked_packages": list(blocked.keys()),
+    })
+
+
+@mcp.tool()
+async def get_package_dashboard(ctx: Context) -> str:
+    """Returns a package-team dashboard from saved readiness and comparison outputs."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    readiness_path = _package_readiness_path(config)
+    comparison_path = config["output_files"]["comparison_report_json"]
+    readiness = _safe_load_json(readiness_path)
+    comparison = _safe_load_json(comparison_path)
+    actionable = [name for name, item in comparison.items() if is_actionable_update(item)]
+    blocked = {name: item for name, item in readiness.items() if _is_blocked_package(item)}
+    ready = [
+        name for name, item in readiness.items()
+        if not _is_blocked_package(item) and str(item.get("Package Readiness") or "").strip()
+    ]
+    return _json_response({
+        "readiness_available": bool(readiness),
+        "comparison_available": bool(comparison),
+        "total_packages": len(readiness),
+        "software_requiring_update": len(actionable),
+        "ready_count": len(ready),
+        "blocked_count": len(blocked),
+        "status_counts": _count_by_field(readiness, "Package Readiness") if readiness else {},
+        "blocked_packages": blocked,
+        "paths": {
+            "package_readiness": _resolve_path(readiness_path),
+            "comparison_report": _resolve_path(comparison_path),
+        },
+    })
+
+
+@mcp.tool()
+async def get_blocked_packages(ctx: Context) -> str:
+    """Returns package readiness items that are blocked or require review."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    path = _package_readiness_path(config)
+    readiness = _safe_load_json(path)
+    blocked = {
+        name: {
+            "Package Readiness": item.get("Package Readiness"),
+            "Upgrade Impact": item.get("Upgrade Impact"),
+            "Owner": item.get("Owner"),
+            "Blocker": item.get("Blocker"),
+            "Target Version": item.get("Target Version"),
+        }
+        for name, item in readiness.items()
+        if _is_blocked_package(item)
+    }
+    return _json_response({
+        "path": _resolve_path(path),
+        "total": len(blocked),
+        "blocked_packages": blocked,
+    })
+
+
+@mcp.tool()
+async def get_package_checklist(ctx: Context, software_name: str | None = None) -> str:
+    """Returns package checklist status from saved package readiness output."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    path = _package_readiness_path(config)
+    readiness = _safe_load_json(path)
+    if software_name:
+        candidates = {software_name: readiness.get(software_name, {})}
+    else:
+        candidates = readiness
+    checklist = {}
+    for name, item in candidates.items():
+        checks = item.get("Checklist") if isinstance(item, dict) else {}
+        if not isinstance(checks, dict):
+            checks = {}
+        checklist[name] = {
+            "Package Readiness": item.get("Package Readiness") if isinstance(item, dict) else None,
+            "Checklist": checks,
+            "completed": sum(1 for value in checks.values() if bool(value)),
+            "total": len(checks),
+            "pending": [key for key, value in checks.items() if not bool(value)],
+        }
+    return _json_response({
+        "path": _resolve_path(path),
+        "total": len(checklist),
+        "checklist": checklist,
+    })
+
+
+@mcp.tool()
 async def check_compatibility(
     ctx: Context,
     comparison: dict | None = None,
@@ -792,6 +963,109 @@ async def generate_qa_validation(
 
 
 @mcp.tool()
+async def get_qa_dashboard(ctx: Context) -> str:
+    """Returns a QA dashboard from saved QA validation and test case impact outputs."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    qa_path = _qa_validation_path(config)
+    impact_path = _testcase_impact_path(config)
+    qa_validation = _safe_load_json(qa_path)
+    testcase_impact = _safe_load_json(impact_path)
+    results = _count_by_field(qa_validation, "Test Result") if qa_validation else {}
+    install_status = _count_by_field(qa_validation, "Installation Status") if qa_validation else {}
+    not_ready = {
+        name: item for name, item in qa_validation.items()
+        if str(item.get("Test Result") or "").upper() in {"FAIL", "FAILED", "WARNING", "BLOCKED", "NOT TESTED"}
+    }
+    return _json_response({
+        "qa_validation_available": bool(qa_validation),
+        "testcase_impact_available": bool(testcase_impact),
+        "total_software": len(qa_validation),
+        "test_result_counts": results,
+        "installation_status_counts": install_status,
+        "not_ready_count": len(not_ready),
+        "testcase_summary": testcase_impact.get("summary", {}),
+        "paths": {
+            "qa_validation": _resolve_path(qa_path),
+            "testcase_impact": _resolve_path(impact_path),
+            "testcase_impact_excel": _resolve_path(_testcase_impact_excel_path(config)),
+        },
+    })
+
+
+@mcp.tool()
+async def get_testcase_coverage(ctx: Context, category: str | None = None) -> str:
+    """Compares configured software against testcaseRepository.xlsx coverage."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    selected_category = category or config.get("default_category", "ALL")
+    software = load_software(config["input_files"]["software_yml"], selected_category)
+    repo_path = _resolve_path(_testcase_repository_path(config))
+    repository = load_testcase_repository(repo_path)
+    coverage: dict[str, dict[str, Any]] = {}
+    normalized_repo = (
+        repository["Software Name"].astype(str).str.lower().str.strip()
+        if not repository.empty and "Software Name" in repository.columns
+        else []
+    )
+    for name in software:
+        needle = name.lower().strip()
+        if repository.empty:
+            matches = repository
+        else:
+            exact = repository[normalized_repo == needle]
+            if exact.empty:
+                tokens = [token for token in needle.replace("-", " ").split() if len(token) >= 4]
+                mask = normalized_repo.apply(lambda value: any(token in value for token in tokens))
+                matches = repository[mask]
+            else:
+                matches = exact
+        coverage[name] = {
+            "covered": not matches.empty,
+            "test_case_count": int(len(matches)),
+            "test_case_ids": matches["Test Case ID"].astype(str).tolist() if not matches.empty else [],
+            "owners": sorted(set(matches["Owner"].astype(str))) if not matches.empty else [],
+        }
+    uncovered = [name for name, item in coverage.items() if not item["covered"]]
+    return _json_response({
+        "category": selected_category,
+        "repository_path": repo_path,
+        "software_count": len(software),
+        "covered_count": len(software) - len(uncovered),
+        "uncovered_count": len(uncovered),
+        "uncovered_software": uncovered,
+        "coverage": coverage,
+    })
+
+
+@mcp.tool()
+async def get_failed_qa_items(ctx: Context) -> str:
+    """Returns QA validation items with failed, warning, blocked, or not-tested status."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    path = _qa_validation_path(config)
+    qa_validation = _safe_load_json(path)
+    failed_statuses = {"FAIL", "FAILED", "WARNING", "BLOCKED", "NOT TESTED"}
+    failed = {
+        name: {
+            "Test Result": item.get("Test Result"),
+            "Installation Status": item.get("Installation Status"),
+            "Compatibility Status": item.get("Compatibility Status"),
+            "Test Notes": item.get("Test Notes"),
+            "Tested By": item.get("Tested By"),
+            "Evidence File": item.get("Evidence File"),
+        }
+        for name, item in qa_validation.items()
+        if str(item.get("Test Result") or "").upper() in failed_statuses
+    }
+    return _json_response({
+        "path": _resolve_path(path),
+        "total": len(failed),
+        "failed_qa_items": failed,
+    })
+
+
+@mcp.tool()
 async def save_package_readiness(ctx: Context, package_readiness: dict) -> str:
     """Saves package readiness results to output/package_readiness.json."""
     state = ctx.request_context.lifespan_context
@@ -834,6 +1108,50 @@ async def generate_testcase_impact(ctx: Context, comparison: dict | None = None)
         "excel_path": _resolve_path(_testcase_impact_excel_path(config)),
         "summary": impact.get("summary", {}),
         "testcase_impact": impact,
+    })
+
+
+@mcp.tool()
+async def get_output_files(ctx: Context) -> str:
+    """Lists configured output files with existence, size, and modified time."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    files = {
+        name: _file_info(path)
+        for name, path in config.get("output_files", {}).items()
+    }
+    existing = {name: info for name, info in files.items() if info["exists"]}
+    return _json_response({
+        "output_directory": _resolve_path("output"),
+        "total_configured": len(files),
+        "total_existing": len(existing),
+        "files": files,
+    })
+
+
+@mcp.tool()
+async def get_release_artifacts(ctx: Context) -> str:
+    """Returns release, package, and QA artifacts generated for the active workspace."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    artifacts = {
+        "latest_versions": _file_info(config["output_files"].get("latest_version_json", "output/latest_versions.json")),
+        "current_versions": _file_info(config["output_files"].get("current_version_json", "output/current_versions.json")),
+        "comparison_report": _file_info(config["output_files"].get("comparison_report_json", "output/comparison_report.json")),
+        "vulnerability_report": _file_info(_vulnerability_path(config)),
+        "package_readiness": _file_info(_package_readiness_path(config)),
+        "qa_validation": _file_info(_qa_validation_path(config)),
+        "testcase_impact": _file_info(_testcase_impact_path(config)),
+        "testcase_impact_excel": _file_info(_testcase_impact_excel_path(config)),
+        "excel_assessment": _file_info(_excel_assessment_path(config)),
+    }
+    missing = [name for name, info in artifacts.items() if not info["exists"]]
+    return _json_response({
+        "project_root": _PROJECT_ROOT,
+        "artifact_count": len(artifacts),
+        "available_count": len(artifacts) - len(missing),
+        "missing": missing,
+        "artifacts": artifacts,
     })
 
 

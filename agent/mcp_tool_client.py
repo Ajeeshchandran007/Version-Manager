@@ -40,6 +40,7 @@ class MCPToolClient:
     def as_agent_tools(self, allowed_tools: list[str] | None = None) -> dict[str, Callable[..., Any]]:
         names = allowed_tools or [
             "get_software_list",
+            "get_active_config",
             "query_server",
             "extract_from_pdf",
             "search_latest_version",
@@ -49,11 +50,20 @@ class MCPToolClient:
             "save_vulnerability_report",
             "assess_package_readiness",
             "save_package_readiness",
+            "get_package_dashboard",
+            "get_package_readiness_summary",
+            "get_blocked_packages",
+            "get_package_checklist",
             "check_compatibility",
             "generate_qa_validation",
             "save_qa_validation",
             "generate_testcase_impact",
+            "get_qa_dashboard",
+            "get_testcase_coverage",
+            "get_failed_qa_items",
             "generate_excel_assessment",
+            "get_output_files",
+            "get_release_artifacts",
             "send_notification",
             "log_audit_event",
         ]

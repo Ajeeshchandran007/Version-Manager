@@ -58,14 +58,34 @@ class VersionManagerState(TypedDict, total=False):
 ToolMap = dict[str, Callable[..., Any]]
 
 
-DISCOVERY_TOOLS = ["get_software_list", "query_server", "extract_from_pdf"]
+DISCOVERY_TOOLS = ["get_software_list", "query_server", "extract_from_pdf", "get_active_config"]
 RESEARCH_TOOLS = ["search_latest_version"]
 ANALYSIS_TOOLS = ["compare_versions", "get_run_history"]
 SECURITY_TOOLS = ["check_vulnerabilities", "save_vulnerability_report"]
-PACKAGE_READINESS_TOOLS = ["assess_package_readiness", "save_package_readiness"]
+PACKAGE_READINESS_TOOLS = [
+    "assess_package_readiness",
+    "save_package_readiness",
+    "get_package_dashboard",
+    "get_package_readiness_summary",
+    "get_blocked_packages",
+    "get_package_checklist",
+]
 COMPATIBILITY_TOOLS = ["check_compatibility"]
-QA_VALIDATION_TOOLS = ["generate_qa_validation", "save_qa_validation", "generate_testcase_impact"]
-REPORTING_TOOLS = ["generate_excel_assessment", "send_notification", "log_audit_event"]
+QA_VALIDATION_TOOLS = [
+    "generate_qa_validation",
+    "save_qa_validation",
+    "generate_testcase_impact",
+    "get_qa_dashboard",
+    "get_testcase_coverage",
+    "get_failed_qa_items",
+]
+REPORTING_TOOLS = [
+    "generate_excel_assessment",
+    "send_notification",
+    "log_audit_event",
+    "get_output_files",
+    "get_release_artifacts",
+]
 
 
 class BaseSpecializedAgent:
