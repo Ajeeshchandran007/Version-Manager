@@ -148,29 +148,48 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
         else:
             st.error(f"Schedule was not saved: {schedule_result.get('error')}")
 
-    qa_mode = current_role() == ROLE_QA_ENGINEER
+    role = current_role()
+    qa_mode = role == ROLE_QA_ENGINEER
+    package_mode = role == ROLE_RELEASE_ENGINEER
     st.subheader("Manual Validation Trigger" if qa_mode else "Manual Scan Trigger")
     left, right = st.columns([1.2, 1])
     with left:
-        button_label = "Run Validation Workflow" if qa_mode else "Run Scan Now"
-        spinner_text = (
-            "Running validation workflow: inventory, comparison, compatibility, and QA validation..."
+        button_label = (
+            "Run QA Workflow"
             if qa_mode
-            else "Running full pipeline: latest versions, current versions, comparison, vulnerability assessment, Excel, and email..."
+            else ("Run Package Workflow" if package_mode else "Run Full Pipeline")
+        )
+        spinner_text = (
+            "Running QA workflow: shared scan plus QA validation and testcase impact..."
+            if qa_mode
+            else (
+                "Running package workflow: shared scan plus package readiness..."
+                if package_mode
+                else "Running full pipeline: shared scan, package readiness, QA validation, Excel, and email..."
+            )
         )
         if st.button(button_label, type="primary", use_container_width=True):
             with st.spinner(spinner_text):
                 try:
-                    result = ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
+                    if qa_mode:
+                        result = ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh))
+                    elif package_mode:
+                        result = ctx.run_async(ctx.trigger_package_workflow(category, force_refresh))
+                    else:
+                        result = ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
                     ctx.clear_dashboard_cache()
                     st.session_state["last_operation_result"] = ctx.with_actor(result)
                 except Exception as exc:
                     st.session_state["last_operation_result"] = ctx.with_actor({"error": str(exc)})
     with right:
         help_text = (
-            "Runs the controlled backend workflow and refreshes compatibility and QA validation outputs for deployment testing."
+            "Runs shared scan outputs and refreshes QA validation/testcase outputs without updating package-owned files."
             if qa_mode
-            else "Runs latest-version lookup, current inventory collection, comparison, vulnerability assessment, Excel generation, and email reporting immediately."
+            else (
+                "Runs shared scan outputs and refreshes package-owned readiness files without updating QA validation files."
+                if package_mode
+                else "Runs latest-version lookup, current inventory, comparison, vulnerability assessment, package readiness, QA validation, Excel, and email reporting."
+            )
         )
         st.markdown(
             f"""

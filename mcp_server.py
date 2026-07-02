@@ -354,14 +354,25 @@ async def _resolve_current_version(querier: ServerQuerier, reader: PDFReader, na
 
 
 # ---------------------------------------------------------------------------
-# Internal pipeline function (used by scheduler AND run_full_pipeline tool)
+# Internal pipeline function (used by scheduler AND workflow tools)
 # ---------------------------------------------------------------------------
-async def _run_pipeline(state: dict, category: str, force_refresh: bool = False) -> dict:
+async def _run_pipeline(
+    state: dict,
+    category: str,
+    force_refresh: bool = False,
+    workflow_scope: str = "full",
+) -> dict:
     """
     Executes the full pipeline:
         fetch latest → fetch current → compare → notify
     Returns a summary dict.
     """
+    workflow_scope = (workflow_scope or "full").lower().strip()
+    if workflow_scope not in {"shared", "package", "qa", "full"}:
+        return {"error": f"Unsupported workflow_scope '{workflow_scope}'"}
+    write_package_outputs = workflow_scope in {"package", "full"}
+    write_qa_outputs = workflow_scope in {"qa", "full"}
+
     config  = _refresh_state_config(state)
     fetcher = state["version_fetcher"]
     reader  = state["pdf_reader"]
@@ -428,35 +439,43 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
     _save_json(vulnerabilities, out)
     logger.info(f"Vulnerability report saved -> {_resolve_path(out)}")
 
-    logger.info("Step 5: Generating release engineering and QA workspace assessments...")
-    with observed_step("assess_workspaces", trace_id, category=category, total=len(software_list)):
-        vendor_requirements = await _resolve_vendor_compatibility_requirements(report, latest, force_refresh=force_refresh)
-        package_readiness, qa_validation = save_workspace_outputs(
-            report,
-            latest,
-            vulnerabilities,
-            _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config)),
-            _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config)),
-            software_metadata,
-            vendor_requirements,
-        )
-    package_path = _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config))
-    qa_path = _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config))
-    logger.info(f"Package readiness saved -> {package_path}")
-    logger.info(f"QA validation saved -> {qa_path}")
+    package_readiness = {}
+    qa_validation = {}
+    testcase_impact = {}
+    package_path = None
+    qa_path = None
+    testcase_path = None
+    testcase_excel_path = None
 
-    logger.info("Step 6: Mapping impacted QA test cases...")
-    with observed_step("testcase_impact", trace_id, category=category, total=len(software_list)):
-        testcase_impact = save_testcase_impact_outputs(
-            report,
-            _resolve_path(_testcase_repository_path(config)),
-            _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config)),
-            _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config)),
-        )
-    testcase_path = _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config))
-    testcase_excel_path = _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config))
-    logger.info(f"Test case impact saved -> {testcase_path}")
-    logger.info(f"Test case impact workbook saved -> {testcase_excel_path}")
+    if write_package_outputs or write_qa_outputs:
+        logger.info(f"Step 5: Generating {workflow_scope} workspace assessments...")
+        with observed_step("assess_workspaces", trace_id, category=category, total=len(software_list)):
+            vendor_requirements = await _resolve_vendor_compatibility_requirements(report, latest, force_refresh=force_refresh)
+            package_readiness = build_package_readiness(report, latest, vulnerabilities)
+            if write_package_outputs:
+                package_path = _active_output_write_path(config, "package_readiness_json", _package_readiness_path(config))
+                _save_json(package_readiness, package_path)
+                logger.info(f"Package readiness saved -> {package_path}")
+            if write_qa_outputs:
+                qa_validation = build_qa_validation(report, package_readiness, software_metadata, vendor_requirements)
+                qa_path = _active_output_write_path(config, "qa_validation_json", _qa_validation_path(config))
+                qa_validation = merge_existing_qa_updates(qa_validation, qa_path)
+                _save_json(qa_validation, qa_path)
+                logger.info(f"QA validation saved -> {qa_path}")
+
+    if write_qa_outputs:
+        logger.info("Step 6: Mapping impacted QA test cases...")
+        with observed_step("testcase_impact", trace_id, category=category, total=len(software_list)):
+            testcase_path = _active_output_write_path(config, "testcase_impact_json", _testcase_impact_path(config))
+            testcase_excel_path = _active_output_write_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config))
+            testcase_impact = save_testcase_impact_outputs(
+                report,
+                _resolve_path(_testcase_repository_path(config)),
+                testcase_path,
+                testcase_excel_path,
+            )
+        logger.info(f"Test case impact saved -> {testcase_path}")
+        logger.info(f"Test case impact workbook saved -> {testcase_excel_path}")
 
     logger.info("Step 7: Generating Excel assessment workbook...")
     excel_path = _active_output_write_path(config, "excel_assessment", _excel_assessment_path(config))
@@ -482,16 +501,17 @@ async def _run_pipeline(state: dict, category: str, force_refresh: bool = False)
 
     summary = {
         "category":      category,
+        "workflow_scope": workflow_scope,
         "trace_id":      trace_id,
         "cache_mode":    "fresh" if force_refresh else "use_cache",
         "total":         len(software_list),
         "needs_update":  updates,
         "unknown":       unknown,
         "vulnerability_report": _resolve_path(out),
-        "package_readiness_report": package_path,
-        "qa_validation_report": qa_path,
-        "testcase_impact_report": testcase_path,
-        "testcase_impact_excel": testcase_excel_path,
+        "package_readiness_report": _resolve_path(package_path) if package_path else None,
+        "qa_validation_report": _resolve_path(qa_path) if qa_path else None,
+        "testcase_impact_report": _resolve_path(testcase_path) if testcase_path else None,
+        "testcase_impact_excel": _resolve_path(testcase_excel_path) if testcase_excel_path else None,
         "excel_assessment": excel_path,
         "vulnerabilities": vulnerabilities,
         "package_readiness": package_readiness,
@@ -1322,6 +1342,58 @@ async def log_audit_event(ctx: Context, step: str, details: dict | None = None) 
     return _json_response({"logged": True, "run_id": run_id, "step": step})
 
 
+def _format_pipeline_summary(summary: dict, title: str) -> str:
+    updates = summary["needs_update"]
+    unknown = summary.get("unknown", [])
+    return (
+        f"{title} complete for category='{summary.get('category')}'.\n"
+        f"  Workflow scope         : {summary.get('workflow_scope')}\n"
+        f"  Cache mode             : {summary.get('cache_mode')}\n"
+        f"  Total software checked : {summary['total']}\n"
+        f"  Needs update           : {', '.join(updates) or 'none'}\n"
+        f"  Unknown                : {', '.join(unknown) or 'none'}\n"
+        f"  Vulnerability report   : {summary.get('vulnerability_report')}\n"
+        f"  Package readiness      : {summary.get('package_readiness_report') or 'not updated by this workflow'}\n"
+        f"  QA validation          : {summary.get('qa_validation_report') or 'not updated by this workflow'}\n"
+        f"  Test case impact       : {summary.get('testcase_impact_report') or 'not updated by this workflow'}\n"
+        f"  Excel assessment       : {summary.get('excel_assessment')}\n"
+        f"  Email sent             : {summary['email_sent']}"
+    )
+
+
+@mcp.tool()
+async def run_shared_scan(ctx: Context, category: str = "ALL", force_refresh: bool = False) -> str:
+    """Runs only shared scan outputs: latest, current, comparison, vulnerability, Excel, and email."""
+    state = ctx.request_context.lifespan_context
+    await ctx.info(f"Starting shared scan for category='{category}'...")
+    summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope="shared")
+    if "error" in summary:
+        return f"Shared scan failed: {summary['error']}"
+    return _format_pipeline_summary(summary, "Shared scan")
+
+
+@mcp.tool()
+async def run_package_flow(ctx: Context, category: str = "ALL", force_refresh: bool = False) -> str:
+    """Runs shared scan outputs and updates package-owned readiness outputs only."""
+    state = ctx.request_context.lifespan_context
+    await ctx.info(f"Starting package flow for category='{category}'...")
+    summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope="package")
+    if "error" in summary:
+        return f"Package flow failed: {summary['error']}"
+    return _format_pipeline_summary(summary, "Package flow")
+
+
+@mcp.tool()
+async def run_qa_flow(ctx: Context, category: str = "ALL", force_refresh: bool = False) -> str:
+    """Runs shared scan outputs and updates QA-owned validation/testcase outputs only."""
+    state = ctx.request_context.lifespan_context
+    await ctx.info(f"Starting QA flow for category='{category}'...")
+    summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope="qa")
+    if "error" in summary:
+        return f"QA flow failed: {summary['error']}"
+    return _format_pipeline_summary(summary, "QA flow")
+
+
 # ---------------------------------------------------------------------------
 # Tool 5 — Run Full Pipeline
 # ---------------------------------------------------------------------------
@@ -1343,26 +1415,12 @@ async def run_full_pipeline(ctx: Context, category: str = "ALL", force_refresh: 
         f"with cache_mode={'fresh' if force_refresh else 'use_cache'}..."
     )
 
-    summary = await _run_pipeline(state, category, force_refresh=force_refresh)
+    summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope="full")
 
     if "error" in summary:
         return f"Pipeline failed: {summary['error']}"
 
-    updates = summary["needs_update"]
-    unknown = summary.get("unknown", [])
-    return (
-        f"Pipeline complete for category='{category}'.\n"
-        f"  Cache mode             : {summary.get('cache_mode')}\n"
-        f"  Total software checked : {summary['total']}\n"
-        f"  Needs update           : {', '.join(updates) or 'none'}\n"
-        f"  Unknown                : {', '.join(unknown) or 'none'}\n"
-        f"  Vulnerability report   : {summary.get('vulnerability_report')}\n"
-        f"  Package readiness      : {summary.get('package_readiness_report')}\n"
-        f"  QA validation          : {summary.get('qa_validation_report')}\n"
-        f"  Test case impact       : {summary.get('testcase_impact_report')}\n"
-        f"  Excel assessment       : {summary.get('excel_assessment')}\n"
-        f"  Email sent             : {summary['email_sent']}"
-    )
+    return _format_pipeline_summary(summary, "Pipeline")
 
 
 # ---------------------------------------------------------------------------

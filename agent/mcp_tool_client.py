@@ -65,6 +65,9 @@ class MCPToolClient:
             "generate_excel_assessment",
             "get_output_files",
             "get_release_artifacts",
+            "run_shared_scan",
+            "run_package_flow",
+            "run_qa_flow",
             "send_notification",
             "log_audit_event",
         ]

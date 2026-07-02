@@ -63,6 +63,7 @@ RESEARCH_TOOLS = ["search_latest_version"]
 ANALYSIS_TOOLS = ["compare_versions", "get_run_history"]
 SECURITY_TOOLS = ["check_vulnerabilities", "save_vulnerability_report"]
 PACKAGE_READINESS_TOOLS = [
+    "run_package_flow",
     "assess_package_readiness",
     "save_package_readiness",
     "get_package_dashboard",
@@ -72,6 +73,7 @@ PACKAGE_READINESS_TOOLS = [
 ]
 COMPATIBILITY_TOOLS = ["check_compatibility"]
 QA_VALIDATION_TOOLS = [
+    "run_qa_flow",
     "generate_qa_validation",
     "save_qa_validation",
     "generate_testcase_impact",
@@ -81,6 +83,7 @@ QA_VALIDATION_TOOLS = [
     "get_qa_testers",
 ]
 REPORTING_TOOLS = [
+    "run_shared_scan",
     "generate_excel_assessment",
     "send_notification",
     "log_audit_event",

@@ -80,7 +80,7 @@ from Utils.utils import load_config, logger
 from agent.memory import get_run_history as read_run_history
 from agent.memory import log_audit
 from agent.multi_agent import LangGraphVersionManager
-from mcp_server import _load_json, _resolve_current_version, _save_json, _vulnerability_path
+from mcp_server import _load_json, _resolve_current_version, _run_pipeline, _save_json, _vulnerability_path
 
 
 OUTPUT_DIR = BASE_DIR / "output"
@@ -1010,6 +1010,42 @@ async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str,
         "email_sent": bool(notification.get("sent")),
         "email_error": notification.get("error"),
     }
+
+
+async def trigger_scoped_pipeline(category: str, force_refresh: bool, workflow_scope: str) -> dict[str, Any]:
+    state = runtime_state()
+    summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope=workflow_scope)
+    if "error" in summary:
+        return {"error": summary["error"], "operation": f"{workflow_scope}_workflow"}
+    return {
+        "operation": f"{workflow_scope}_workflow",
+        "workflow": "Scoped Backend Pipeline",
+        "workflow_scope": summary.get("workflow_scope"),
+        "cache_mode": summary.get("cache_mode"),
+        "total": summary.get("total", 0),
+        "needs_update": summary.get("needs_update", []),
+        "unknown": summary.get("unknown", []),
+        "vulnerability_report": summary.get("vulnerability_report"),
+        "package_readiness_report": summary.get("package_readiness_report"),
+        "qa_validation_report": summary.get("qa_validation_report"),
+        "testcase_impact_report": summary.get("testcase_impact_report"),
+        "testcase_impact_excel": summary.get("testcase_impact_excel"),
+        "excel_assessment": summary.get("excel_assessment"),
+        "vulnerabilities": summary.get("vulnerabilities", {}),
+        "package_readiness": summary.get("package_readiness", {}),
+        "qa_validation": summary.get("qa_validation", {}),
+        "testcase_impact": summary.get("testcase_impact", {}),
+        "email_sent": summary.get("email_sent"),
+        "email_error": summary.get("email_error"),
+    }
+
+
+async def trigger_package_workflow(category: str, force_refresh: bool) -> dict[str, Any]:
+    return await trigger_scoped_pipeline(category, force_refresh, "package")
+
+
+async def trigger_qa_workflow(category: str, force_refresh: bool) -> dict[str, Any]:
+    return await trigger_scoped_pipeline(category, force_refresh, "qa")
 
 
 async def trigger_fetch_latest_versions(category: str, force_refresh: bool) -> dict[str, Any]:
@@ -2095,6 +2131,8 @@ def page_context() -> SimpleNamespace:
         trigger_fetch_current_versions=trigger_fetch_current_versions,
         trigger_fetch_latest_versions=trigger_fetch_latest_versions,
         trigger_full_pipeline=trigger_full_pipeline,
+        trigger_package_workflow=trigger_package_workflow,
+        trigger_qa_workflow=trigger_qa_workflow,
         trigger_send_report_email=trigger_send_report_email,
         validate_cron_expression=validate_cron_expression,
         value=value,
