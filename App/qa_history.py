@@ -87,31 +87,42 @@ def append_qa_history(output_dir: Path, record: dict[str, Any]) -> None:
     history_path(output_dir).write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
 
-def build_qa_update_history_record(
-    product: str,
-    release_line: str,
-    software_name: str,
-    installation_status: str,
-    test_result: str,
-    test_case_count: int,
-    test_cases_executed: int,
-    tested_by: str,
-    notes: str,
-) -> dict[str, Any]:
-    executed = min(_safe_int(test_cases_executed), _safe_int(test_case_count)) if _safe_int(test_case_count) else _safe_int(test_cases_executed)
-    total = _safe_int(test_case_count)
+def build_qa_signoff_history_record(signoff: dict[str, Any], qa_df: pd.DataFrame) -> dict[str, Any]:
+    software_results: list[dict[str, Any]] = []
+    for _, row in qa_df.iterrows():
+        total = _safe_int(row.get("Test Case Count"))
+        executed = min(_safe_int(row.get("Test Cases Executed")), total) if total else _safe_int(row.get("Test Cases Executed"))
+        software_results.append(
+            {
+                "software": str(row.get("Software Name", "")),
+                "installation_status": str(row.get("Installation Status", "")),
+                "test_result": str(row.get("Test Result", "")),
+                "test_case_count": total,
+                "test_cases_executed": executed,
+                "coverage_percent": _coverage(executed, total),
+                "tested_by": str(row.get("Tested By", "")),
+                "test_date": str(row.get("Test Date", "")),
+                "notes": str(row.get("Test Notes", "")),
+            }
+        )
+
     return {
-        "event_type": "QA Update",
-        "product": product,
-        "release_line": release_line,
-        "software": software_name,
-        "installation_status": installation_status,
-        "test_result": test_result,
-        "test_case_count": total,
-        "test_cases_executed": executed,
-        "coverage_percent": _coverage(executed, total),
-        "tested_by": tested_by,
-        "notes": notes.strip(),
+        "event_type": "QA Signoff",
+        "product": signoff.get("product", ""),
+        "release_line": signoff.get("release_line", ""),
+        "status": signoff.get("status", ""),
+        "total_software": signoff.get("total_software", 0),
+        "total_test_cases": signoff.get("total_test_cases", 0),
+        "executed_test_cases": signoff.get("executed_test_cases", 0),
+        "coverage_percent": signoff.get("coverage_percent", 0),
+        "pass": signoff.get("pass", 0),
+        "fail": signoff.get("fail", 0),
+        "warning": signoff.get("warning", 0),
+        "not_tested": signoff.get("not_tested", 0),
+        "signed_by": signoff.get("signed_by", ""),
+        "signed_date": signoff.get("signed_date", ""),
+        "comments": signoff.get("comments", ""),
+        "software_results": software_results,
     }
 
 

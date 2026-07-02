@@ -31,7 +31,7 @@ from App.emailing import prepare_email_report_files, qa_report_attachments
 from App import pages as app_pages
 from App.qa_history import (
     append_qa_history,
-    build_qa_update_history_record,
+    build_qa_signoff_history_record,
     calculate_qa_summary,
     history_dataframe,
     load_qa_history,
@@ -2340,18 +2340,6 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                 tested_by,
                 evidence_file,
             )
-            history_record = build_qa_update_history_record(
-                active_team_name(),
-                active_release_line(),
-                software_name,
-                installation_status,
-                test_result,
-                selected_test_case_count,
-                test_cases_executed,
-                tested_by,
-                notes,
-            )
-            append_qa_history(qa_output_dir, history_record)
             st.success(f"QA result saved for {software_name}.")
             st.rerun()
         except Exception as exc:
@@ -2410,44 +2398,30 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                 pending_signoff.get("comments", ""),
             )
             save_qa_signoff(qa_output_dir, signoff)
-            append_qa_history(
-                qa_output_dir,
-                {
-                    "event_type": "QA Signoff",
-                    "product": active_team_name(),
-                    "release_line": active_release_line(),
-                    "software": "All",
-                    "test_case_count": signoff["total_test_cases"],
-                    "test_cases_executed": signoff["executed_test_cases"],
-                    "coverage_percent": signoff["coverage_percent"],
-                    "tested_by": signoff["signed_by"],
-                    "test_result": signoff["status"],
-                    "notes": signoff["comments"],
-                },
-            )
+            append_qa_history(qa_output_dir, build_qa_signoff_history_record(signoff, qa_df))
             st.session_state.pop("qa_signoff_pending", None)
             st.success(f"QA signoff saved: {signoff['status']}.")
             st.rerun()
         except Exception as exc:
             st.error(f"QA signoff was not saved: {exc}")
 
-    st.subheader("QA Result History")
+    st.subheader("QA Signoff History")
     history_df = history_dataframe(load_qa_history(qa_output_dir))
     if history_df.empty:
-        st.info("No QA history captured yet.")
+        st.info("No QA signoff history captured yet.")
     else:
         display_cols = [
             col
             for col in [
                 "timestamp",
-                "event_type",
-                "software",
-                "test_result",
-                "test_cases_executed",
-                "test_case_count",
+                "product",
+                "release_line",
+                "status",
+                "executed_test_cases",
+                "total_test_cases",
                 "coverage_percent",
-                "tested_by",
-                "notes",
+                "signed_by",
+                "comments",
             ]
             if col in history_df.columns
         ]
