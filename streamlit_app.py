@@ -2358,14 +2358,57 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             st.error(f"QA result was not saved: {exc}")
 
     st.subheader("QA Completion Signoff")
-    st.caption("Records that QA completed validation for the selected product/release context. This is not a release freeze.")
+    st.info("QA signoff records validation completion for the selected product and release line.")
+    context_cols = st.columns(4)
+    context_cols[0].metric("Product", active_team_name())
+    context_cols[1].metric("Release Line", active_release_line())
+    context_cols[2].metric("Coverage", f"{qa_summary['coverage_percent']:g}%")
+    context_cols[3].metric("Not Tested", result_counts.get("NOT TESTED", 0))
     with st.form("qa_completion_signoff_form"):
         signoff_comments = st.text_area("Signoff Comments", placeholder="Summarize validation scope, known gaps, or selective coverage rationale.")
         signoff_by = st.text_input("Signed By", value=current_user().get("display_name", current_user().get("username", "")))
-        signoff_submitted = st.form_submit_button("Sign Off QA Validation", type="primary", use_container_width=True)
-    if signoff_submitted:
+        review_signoff = st.form_submit_button("Review QA Signoff", type="primary", use_container_width=True)
+    if review_signoff:
+        st.session_state["qa_signoff_pending"] = {
+            "comments": signoff_comments,
+            "signed_by": signoff_by,
+        }
+
+    pending_signoff = st.session_state.get("qa_signoff_pending")
+    if pending_signoff:
+        st.markdown("#### QA Signoff Confirmation")
+        confirm_cols = st.columns(4)
+        confirm_cols[0].metric("Product", active_team_name())
+        confirm_cols[1].metric("Release Line", active_release_line())
+        confirm_cols[2].metric("Executed / Total", f"{qa_summary['executed_test_cases']} / {qa_summary['total_test_cases']}")
+        confirm_cols[3].metric("Coverage", f"{qa_summary['coverage_percent']:g}%")
+        status_cols = st.columns(4)
+        status_cols[0].metric("PASS", result_counts.get("PASS", 0))
+        status_cols[1].metric("FAIL", result_counts.get("FAIL", 0))
+        status_cols[2].metric("WARNING", result_counts.get("WARNING", 0))
+        status_cols[3].metric("NOT TESTED", result_counts.get("NOT TESTED", 0))
+        if qa_summary["coverage_percent"] < 100 or result_counts.get("NOT TESTED", 0):
+            st.warning(
+                "Some QA validation is incomplete. Signoff is allowed, but it will be recorded with warnings when coverage is below 100% or software remains not tested."
+            )
+        confirm_left, confirm_right = st.columns(2)
+        confirm_clicked = confirm_left.button("Confirm QA Signoff", type="primary", use_container_width=True)
+        cancel_clicked = confirm_right.button("Cancel Signoff", use_container_width=True)
+        if cancel_clicked:
+            st.session_state.pop("qa_signoff_pending", None)
+            st.rerun()
+    else:
+        confirm_clicked = False
+
+    if confirm_clicked:
         try:
-            signoff = build_qa_signoff(active_team_name(), active_release_line(), qa_df, signoff_by, signoff_comments)
+            signoff = build_qa_signoff(
+                active_team_name(),
+                active_release_line(),
+                qa_df,
+                pending_signoff.get("signed_by", ""),
+                pending_signoff.get("comments", ""),
+            )
             save_qa_signoff(qa_output_dir, signoff)
             append_qa_history(
                 qa_output_dir,
@@ -2382,6 +2425,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                     "notes": signoff["comments"],
                 },
             )
+            st.session_state.pop("qa_signoff_pending", None)
             st.success(f"QA signoff saved: {signoff['status']}.")
             st.rerun()
         except Exception as exc:
