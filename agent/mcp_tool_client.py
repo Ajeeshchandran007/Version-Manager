@@ -61,6 +61,7 @@ class MCPToolClient:
             "get_qa_dashboard",
             "get_testcase_coverage",
             "get_failed_qa_items",
+            "get_qa_testers",
             "generate_excel_assessment",
             "get_output_files",
             "get_release_artifacts",

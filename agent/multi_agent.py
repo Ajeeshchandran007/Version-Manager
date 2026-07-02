@@ -78,6 +78,7 @@ QA_VALIDATION_TOOLS = [
     "get_qa_dashboard",
     "get_testcase_coverage",
     "get_failed_qa_items",
+    "get_qa_testers",
 ]
 REPORTING_TOOLS = [
     "generate_excel_assessment",

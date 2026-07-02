@@ -1130,6 +1130,35 @@ async def get_failed_qa_items(ctx: Context) -> str:
 
 
 @mcp.tool()
+async def get_qa_testers(ctx: Context) -> str:
+    """Returns tester, result, and execution status for saved QA validation items."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    release_context = _active_release_context(config)
+    path = _active_output_path(config, "qa_validation_json", _qa_validation_path(config))
+    qa_validation = _safe_load_json(path)
+    testers = {
+        name: {
+            "Tested By": item.get("Tested By"),
+            "Test Date": item.get("Test Date"),
+            "Test Result": item.get("Test Result"),
+            "Installation Status": item.get("Installation Status"),
+            "Test Case Count": item.get("Test Case Count"),
+            "Test Cases Executed": item.get("Test Cases Executed"),
+            "Test Notes": item.get("Test Notes"),
+        }
+        for name, item in qa_validation.items()
+    }
+    return _json_response({
+        "active_team": release_context["team"],
+        "active_release": release_context["release"],
+        "path": _resolve_path(path),
+        "total": len(testers),
+        "qa_testers": testers,
+    })
+
+
+@mcp.tool()
 async def save_package_readiness(ctx: Context, package_readiness: dict) -> str:
     """Saves package readiness results to output/package_readiness.json."""
     state = ctx.request_context.lifespan_context
