@@ -2494,7 +2494,38 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             ]
             if col in history_df.columns
         ]
-        st.dataframe(style_operational_table(history_df[display_cols].tail(25)), use_container_width=True, hide_index=True)
+        display_history = history_df[display_cols].tail(25).rename(
+            columns={
+                "timestamp": "Timestamp",
+                "history_scope": "History Scope",
+                "product": "Product",
+                "release_line": "Release Line",
+                "status": "Status",
+                "executed_test_cases": "Executed Test Cases",
+                "total_test_cases": "Total Test Cases",
+                "coverage_percent": "Coverage %",
+                "signed_by": "Signed By",
+                "comments": "Comments",
+            }
+        )
+        st.dataframe(
+            display_history,
+            use_container_width=True,
+            hide_index=True,
+            height=min(420, 72 + (len(display_history) * 44)),
+            column_config={
+                "Timestamp": st.column_config.TextColumn(width="medium"),
+                "History Scope": st.column_config.TextColumn(width="small"),
+                "Product": st.column_config.TextColumn(width="small"),
+                "Release Line": st.column_config.TextColumn(width="small"),
+                "Status": st.column_config.TextColumn(width="medium"),
+                "Executed Test Cases": st.column_config.NumberColumn(width="small"),
+                "Total Test Cases": st.column_config.NumberColumn(width="small"),
+                "Coverage %": st.column_config.NumberColumn(width="small"),
+                "Signed By": st.column_config.TextColumn(width="small"),
+                "Comments": st.column_config.TextColumn(width="large"),
+            },
+        )
 
 
 def render_vulnerabilities(vuln_df: pd.DataFrame) -> None:
