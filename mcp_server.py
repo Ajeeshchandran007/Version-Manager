@@ -520,10 +520,20 @@ async def fetch_latest_versions(ctx: Context, category: str = "ALL", force_refre
     _save_json(latest, out)
 
     updates = {k: v for k, v in latest.items() if v.get("Build Version")}
+    missing = [name for name, result in latest.items() if not result.get("Build Version")]
+    found_lines = [
+        f"- {name}: {result.get('Build Version')}"
+        + (f" ({result.get('Cumulative Update (CU)')})" if result.get("Cumulative Update (CU)") else "")
+        for name, result in updates.items()
+    ]
+    missing_lines = [f"- {name}: Not Found" for name in missing]
     return (
         f"Latest versions fetched for {len(software_list)} software items.\n"
         f"Cache mode: {'fresh' if force_refresh else 'use_cache'}.\n"
-        f"Found version info for: {', '.join(updates.keys()) or 'none'}.\n"
+        f"Found version info for {len(updates)} item(s):\n"
+        f"{chr(10).join(found_lines) if found_lines else '- none'}\n"
+        f"Version not found for {len(missing)} item(s):\n"
+        f"{chr(10).join(missing_lines) if missing_lines else '- none'}\n"
         f"Saved to: {_resolve_path(out)}"
     )
 
