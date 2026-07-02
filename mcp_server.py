@@ -146,6 +146,53 @@ def _is_blocked_package(record: dict[str, Any]) -> bool:
     return bool(blocker) or "block" in status or "review" in status
 
 
+def _active_release_context(config: dict) -> dict[str, str]:
+    software_yml = _resolve_path(config["input_files"].get("software_yml", ""))
+    parts = os.path.normpath(software_yml).split(os.sep)
+    context = {
+        "team": "",
+        "release": "",
+        "software_yml": software_yml,
+    }
+    if "teams" in parts:
+        index = parts.index("teams")
+        if len(parts) > index + 1:
+            context["team"] = parts[index + 1]
+    if "releases" in parts:
+        index = parts.index("releases")
+        if len(parts) > index + 1:
+            context["release"] = parts[index + 1]
+    return context
+
+
+def _active_workspace_output_dir(config: dict) -> str | None:
+    context = _active_release_context(config)
+    team = context.get("team")
+    release = context.get("release")
+    if not team:
+        return None
+    if release:
+        return _resolve_path(os.path.join("workspaces", team, "releases", release, "output"))
+    return _resolve_path(os.path.join("workspaces", team, "output"))
+
+
+def _active_output_path(config: dict, output_key: str, fallback_path: str) -> str:
+    workspace_dir = _active_workspace_output_dir(config)
+    filename = os.path.basename(config.get("output_files", {}).get(output_key, fallback_path))
+    if workspace_dir:
+        workspace_path = os.path.join(workspace_dir, filename)
+        if os.path.exists(workspace_path):
+            return workspace_path
+    return _resolve_path(config.get("output_files", {}).get(output_key, fallback_path))
+
+
+def _active_aux_output_path(config: dict, filename: str) -> str:
+    workspace_dir = _active_workspace_output_dir(config)
+    if workspace_dir:
+        return os.path.join(workspace_dir, filename)
+    return _resolve_path(os.path.join("output", filename))
+
+
 def _assess_vulnerabilities(
     software_name: str,
     version: str | None,
@@ -766,16 +813,19 @@ async def get_active_config(ctx: Context, category: str | None = None) -> str:
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
     selected_category = category or config.get("default_category", "ALL")
+    release_context = _active_release_context(config)
     software_yml = config["input_files"]["software_yml"]
     software = load_software(software_yml, selected_category)
     paths = {
         "software_yml": _file_info(software_yml),
         "current_version_pdf": _file_info(config["input_files"].get("current_version_pdf", "")),
         "testcase_repository_xlsx": _file_info(_testcase_repository_path(config)),
-        "output_directory": _resolve_path("output"),
+        "output_directory": _active_workspace_output_dir(config) or _resolve_path("output"),
     }
     return _json_response({
         "category": selected_category,
+        "active_team": release_context["team"],
+        "active_release": release_context["release"],
         "project_root": _PROJECT_ROOT,
         "input_files": paths,
         "output_files": config.get("output_files", {}),
@@ -789,7 +839,7 @@ async def get_package_readiness_summary(ctx: Context) -> str:
     """Summarizes saved package readiness results without regenerating reports."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    path = _package_readiness_path(config)
+    path = _active_output_path(config, "package_readiness_json", _package_readiness_path(config))
     readiness = _safe_load_json(path)
     if not readiness:
         return _json_response({
@@ -816,8 +866,9 @@ async def get_package_dashboard(ctx: Context) -> str:
     """Returns a package-team dashboard from saved readiness and comparison outputs."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    readiness_path = _package_readiness_path(config)
-    comparison_path = config["output_files"]["comparison_report_json"]
+    readiness_path = _active_output_path(config, "package_readiness_json", _package_readiness_path(config))
+    comparison_path = _active_output_path(config, "comparison_report_json", config["output_files"]["comparison_report_json"])
+    release_context = _active_release_context(config)
     readiness = _safe_load_json(readiness_path)
     comparison = _safe_load_json(comparison_path)
     actionable = [name for name, item in comparison.items() if is_actionable_update(item)]
@@ -828,6 +879,8 @@ async def get_package_dashboard(ctx: Context) -> str:
     ]
     return _json_response({
         "readiness_available": bool(readiness),
+        "active_team": release_context["team"],
+        "active_release": release_context["release"],
         "comparison_available": bool(comparison),
         "total_packages": len(readiness),
         "software_requiring_update": len(actionable),
@@ -847,7 +900,7 @@ async def get_blocked_packages(ctx: Context) -> str:
     """Returns package readiness items that are blocked or require review."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    path = _package_readiness_path(config)
+    path = _active_output_path(config, "package_readiness_json", _package_readiness_path(config))
     readiness = _safe_load_json(path)
     blocked = {
         name: {
@@ -872,7 +925,7 @@ async def get_package_checklist(ctx: Context, software_name: str | None = None) 
     """Returns package checklist status from saved package readiness output."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    path = _package_readiness_path(config)
+    path = _active_output_path(config, "package_readiness_json", _package_readiness_path(config))
     readiness = _safe_load_json(path)
     if software_name:
         candidates = {software_name: readiness.get(software_name, {})}
@@ -967,10 +1020,13 @@ async def get_qa_dashboard(ctx: Context) -> str:
     """Returns a QA dashboard from saved QA validation and test case impact outputs."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    qa_path = _qa_validation_path(config)
-    impact_path = _testcase_impact_path(config)
+    qa_path = _active_output_path(config, "qa_validation_json", _qa_validation_path(config))
+    impact_path = _active_output_path(config, "testcase_impact_json", _testcase_impact_path(config))
+    signoff_path = _active_aux_output_path(config, "qa_signoff.json")
+    release_context = _active_release_context(config)
     qa_validation = _safe_load_json(qa_path)
     testcase_impact = _safe_load_json(impact_path)
+    qa_signoff = _safe_load_json(signoff_path)
     results = _count_by_field(qa_validation, "Test Result") if qa_validation else {}
     install_status = _count_by_field(qa_validation, "Installation Status") if qa_validation else {}
     not_ready = {
@@ -979,7 +1035,11 @@ async def get_qa_dashboard(ctx: Context) -> str:
     }
     return _json_response({
         "qa_validation_available": bool(qa_validation),
+        "active_team": release_context["team"],
+        "active_release": release_context["release"],
         "testcase_impact_available": bool(testcase_impact),
+        "qa_signoff_available": bool(qa_signoff),
+        "qa_signoff": qa_signoff,
         "total_software": len(qa_validation),
         "test_result_counts": results,
         "installation_status_counts": install_status,
@@ -988,7 +1048,8 @@ async def get_qa_dashboard(ctx: Context) -> str:
         "paths": {
             "qa_validation": _resolve_path(qa_path),
             "testcase_impact": _resolve_path(impact_path),
-            "testcase_impact_excel": _resolve_path(_testcase_impact_excel_path(config)),
+            "testcase_impact_excel": _active_output_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config)),
+            "qa_signoff": signoff_path,
         },
     })
 
@@ -999,6 +1060,7 @@ async def get_testcase_coverage(ctx: Context, category: str | None = None) -> st
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
     selected_category = category or config.get("default_category", "ALL")
+    release_context = _active_release_context(config)
     software = load_software(config["input_files"]["software_yml"], selected_category)
     repo_path = _resolve_path(_testcase_repository_path(config))
     repository = load_testcase_repository(repo_path)
@@ -1029,6 +1091,8 @@ async def get_testcase_coverage(ctx: Context, category: str | None = None) -> st
     uncovered = [name for name, item in coverage.items() if not item["covered"]]
     return _json_response({
         "category": selected_category,
+        "active_team": release_context["team"],
+        "active_release": release_context["release"],
         "repository_path": repo_path,
         "software_count": len(software),
         "covered_count": len(software) - len(uncovered),
@@ -1043,7 +1107,7 @@ async def get_failed_qa_items(ctx: Context) -> str:
     """Returns QA validation items with failed, warning, blocked, or not-tested status."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
-    path = _qa_validation_path(config)
+    path = _active_output_path(config, "qa_validation_json", _qa_validation_path(config))
     qa_validation = _safe_load_json(path)
     failed_statuses = {"FAIL", "FAILED", "WARNING", "BLOCKED", "NOT TESTED"}
     failed = {
@@ -1117,12 +1181,14 @@ async def get_output_files(ctx: Context) -> str:
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
     files = {
-        name: _file_info(path)
+        name: _file_info(_active_output_path(config, name, path))
         for name, path in config.get("output_files", {}).items()
     }
+    signoff_path = _active_aux_output_path(config, "qa_signoff.json")
+    files["qa_signoff_json"] = _file_info(signoff_path)
     existing = {name: info for name, info in files.items() if info["exists"]}
     return _json_response({
-        "output_directory": _resolve_path("output"),
+        "output_directory": _active_workspace_output_dir(config) or _resolve_path("output"),
         "total_configured": len(files),
         "total_existing": len(existing),
         "files": files,
@@ -1134,20 +1200,24 @@ async def get_release_artifacts(ctx: Context) -> str:
     """Returns release, package, and QA artifacts generated for the active workspace."""
     state = ctx.request_context.lifespan_context
     config = _refresh_state_config(state)
+    release_context = _active_release_context(config)
     artifacts = {
-        "latest_versions": _file_info(config["output_files"].get("latest_version_json", "output/latest_versions.json")),
-        "current_versions": _file_info(config["output_files"].get("current_version_json", "output/current_versions.json")),
-        "comparison_report": _file_info(config["output_files"].get("comparison_report_json", "output/comparison_report.json")),
-        "vulnerability_report": _file_info(_vulnerability_path(config)),
-        "package_readiness": _file_info(_package_readiness_path(config)),
-        "qa_validation": _file_info(_qa_validation_path(config)),
-        "testcase_impact": _file_info(_testcase_impact_path(config)),
-        "testcase_impact_excel": _file_info(_testcase_impact_excel_path(config)),
-        "excel_assessment": _file_info(_excel_assessment_path(config)),
+        "latest_versions": _file_info(_active_output_path(config, "latest_version_json", "output/latest_versions.json")),
+        "current_versions": _file_info(_active_output_path(config, "current_version_json", "output/current_versions.json")),
+        "comparison_report": _file_info(_active_output_path(config, "comparison_report_json", "output/comparison_report.json")),
+        "vulnerability_report": _file_info(_active_output_path(config, "vulnerability_report_json", _vulnerability_path(config))),
+        "package_readiness": _file_info(_active_output_path(config, "package_readiness_json", _package_readiness_path(config))),
+        "qa_validation": _file_info(_active_output_path(config, "qa_validation_json", _qa_validation_path(config))),
+        "testcase_impact": _file_info(_active_output_path(config, "testcase_impact_json", _testcase_impact_path(config))),
+        "testcase_impact_excel": _file_info(_active_output_path(config, "testcase_impact_xlsx", _testcase_impact_excel_path(config))),
+        "excel_assessment": _file_info(_active_output_path(config, "excel_assessment", _excel_assessment_path(config))),
+        "qa_signoff": _file_info(_active_aux_output_path(config, "qa_signoff.json")),
     }
     missing = [name for name, info in artifacts.items() if not info["exists"]]
     return _json_response({
         "project_root": _PROJECT_ROOT,
+        "active_team": release_context["team"],
+        "active_release": release_context["release"],
         "artifact_count": len(artifacts),
         "available_count": len(artifacts) - len(missing),
         "missing": missing,
