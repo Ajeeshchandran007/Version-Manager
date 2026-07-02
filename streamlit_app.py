@@ -2482,7 +2482,6 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             col
             for col in [
                 "timestamp",
-                "history_scope",
                 "product",
                 "release_line",
                 "status",
@@ -2497,7 +2496,6 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         display_history = history_df[display_cols].tail(25).rename(
             columns={
                 "timestamp": "Timestamp",
-                "history_scope": "History Scope",
                 "product": "Product",
                 "release_line": "Release Line",
                 "status": "Status",
@@ -2515,7 +2513,6 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             height=min(420, 72 + (len(display_history) * 44)),
             column_config={
                 "Timestamp": st.column_config.TextColumn(width="medium"),
-                "History Scope": st.column_config.TextColumn(width="small"),
                 "Product": st.column_config.TextColumn(width="small"),
                 "Release Line": st.column_config.TextColumn(width="small"),
                 "Status": st.column_config.TextColumn(width="medium"),
