@@ -92,6 +92,22 @@ def load_qa_history(output_dir: Path) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def load_release_qa_history(team_release_output_root: Path, current_release_line: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    releases_root = team_release_output_root.parent.parent
+    if not releases_root.exists():
+        return rows
+    for release_dir in sorted(path for path in releases_root.iterdir() if path.is_dir()):
+        output_dir = release_dir / "output"
+        for record in load_qa_history(output_dir):
+            tagged = dict(record)
+            release_line = str(tagged.get("release_line") or release_dir.name)
+            tagged["release_line"] = release_line
+            tagged["history_scope"] = "Current Release" if release_line == current_release_line else "Previous Release"
+            rows.append(tagged)
+    return rows
+
+
 def append_qa_history(output_dir: Path, record: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = load_qa_history(output_dir)

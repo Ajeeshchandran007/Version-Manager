@@ -36,6 +36,7 @@ from App.qa_history import (
     executed_count,
     history_dataframe,
     load_qa_history,
+    load_release_qa_history,
 )
 from App.qa_signoff import build_qa_signoff, load_qa_signoff, save_qa_signoff
 from App.scan_reports import (
@@ -2470,7 +2471,10 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             st.error(f"QA signoff was not saved: {exc}")
 
     st.subheader("QA Signoff History")
-    history_df = history_dataframe(load_qa_history(qa_output_dir))
+    history_rows = load_release_qa_history(qa_output_dir, active_release_line())
+    if not history_rows:
+        history_rows = load_qa_history(qa_output_dir)
+    history_df = history_dataframe(history_rows)
     if history_df.empty:
         st.info("No QA signoff history captured yet.")
     else:
@@ -2478,6 +2482,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             col
             for col in [
                 "timestamp",
+                "history_scope",
                 "product",
                 "release_line",
                 "status",
