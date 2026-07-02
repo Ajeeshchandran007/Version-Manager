@@ -29,6 +29,20 @@ from App.auth import (
 )
 from App.emailing import prepare_email_report_files, qa_report_attachments
 from App import pages as app_pages
+from App.qa_history import (
+    append_qa_history,
+    build_qa_update_history_record,
+    calculate_qa_summary,
+    history_dataframe,
+    load_qa_history,
+)
+from App.qa_signoff import build_qa_signoff, load_qa_signoff, save_qa_signoff
+from App.scan_reports import (
+    load_parsed_scan_findings,
+    parse_scan_report,
+    save_parsed_scan_findings,
+    save_uploaded_scan_report,
+)
 from App.workspace import (
     BASE_DIR,
     DEFAULT_TEAM_LABEL,
@@ -2220,6 +2234,23 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         axis=1,
     )
     qa_df["Test Case Source"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
+    qa_summary = calculate_qa_summary(qa_df)
+    qa_output_dir = active_output_path("__placeholder__").parent
+    latest_signoff = load_qa_signoff(qa_output_dir)
+
+    st.subheader("QA Validation Summary")
+    summary_cols = st.columns(5)
+    summary_cols[0].metric("Total Test Cases", qa_summary["total_test_cases"])
+    summary_cols[1].metric("Executed Test Cases", qa_summary["executed_test_cases"])
+    summary_cols[2].metric("Coverage", f"{qa_summary['coverage_percent']:g}%")
+    summary_cols[3].metric("Fully Tested", qa_summary["fully_tested"])
+    summary_cols[4].metric("Last Signoff", latest_signoff.get("status", "Not Signed Off"))
+    if latest_signoff:
+        st.caption(
+            f"Last signed by {latest_signoff.get('signed_by', 'unknown')} on "
+            f"{latest_signoff.get('signed_date', 'not available')}."
+        )
+
     searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
 
     testcase_df = normalize_testcase_impact(impact)
@@ -2304,16 +2335,107 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                 tested_by,
                 evidence_file,
             )
+            history_record = build_qa_update_history_record(
+                active_team_name(),
+                active_release_line(),
+                software_name,
+                installation_status,
+                test_result,
+                selected_test_case_count,
+                test_cases_executed,
+                tested_by,
+                notes,
+            )
+            append_qa_history(qa_output_dir, history_record)
             st.success(f"QA result saved for {software_name}.")
             st.rerun()
         except Exception as exc:
             st.error(f"QA result was not saved: {exc}")
 
+    st.subheader("QA Completion Signoff")
+    st.caption("Records that QA completed validation for the selected product/release context. This is not a release freeze.")
+    with st.form("qa_completion_signoff_form"):
+        signoff_comments = st.text_area("Signoff Comments", placeholder="Summarize validation scope, known gaps, or selective coverage rationale.")
+        signoff_by = st.text_input("Signed By", value=current_user().get("display_name", current_user().get("username", "")))
+        signoff_submitted = st.form_submit_button("Sign Off QA Validation", type="primary", use_container_width=True)
+    if signoff_submitted:
+        try:
+            signoff = build_qa_signoff(active_team_name(), active_release_line(), qa_df, signoff_by, signoff_comments)
+            save_qa_signoff(qa_output_dir, signoff)
+            append_qa_history(
+                qa_output_dir,
+                {
+                    "event_type": "QA Signoff",
+                    "product": active_team_name(),
+                    "release_line": active_release_line(),
+                    "software": "All",
+                    "test_case_count": signoff["total_test_cases"],
+                    "test_cases_executed": signoff["executed_test_cases"],
+                    "coverage_percent": signoff["coverage_percent"],
+                    "tested_by": signoff["signed_by"],
+                    "test_result": signoff["status"],
+                    "notes": signoff["comments"],
+                },
+            )
+            st.success(f"QA signoff saved: {signoff['status']}.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"QA signoff was not saved: {exc}")
+
+    st.subheader("QA Result History")
+    history_df = history_dataframe(load_qa_history(qa_output_dir))
+    if history_df.empty:
+        st.info("No QA history captured yet.")
+    else:
+        display_cols = [
+            col
+            for col in [
+                "timestamp",
+                "event_type",
+                "software",
+                "test_result",
+                "test_cases_executed",
+                "test_case_count",
+                "coverage_percent",
+                "tested_by",
+                "notes",
+            ]
+            if col in history_df.columns
+        ]
+        st.dataframe(style_operational_table(history_df[display_cols].tail(25)), use_container_width=True, hide_index=True)
+
 
 def render_vulnerabilities(vuln_df: pd.DataFrame) -> None:
     section_title("Vulnerability Assessment", "Security assessment of current installed versions with latest version context.")
+    output_dir = active_output_path("__placeholder__").parent
+    parsed_scan_findings = load_parsed_scan_findings(output_dir)
+    st.subheader("Vulnerability Data Source")
+    source_cols = st.columns(3)
+    source_cols[0].metric("NVD Lookup", "Available" if not vuln_df.empty else "Not Available")
+    source_cols[1].metric("Uploaded Scan Findings", len(parsed_scan_findings))
+    source_cols[2].metric("Active Display", "NVD Report" if not vuln_df.empty else "Uploaded Scan Report" if parsed_scan_findings else "No Data")
+    with st.expander("Upload Scanner Report", expanded=False):
+        st.caption("Supported first-pass formats: JSON, CSV, XLSX, XLS. If no scanner report is available, the page continues to use NVD lookup results.")
+        scan_file = st.file_uploader("Upload Vulnerability Scan Report", type=["json", "csv", "xlsx", "xls"], key="vulnerability_scan_report_upload")
+        if st.button("Parse Scan Report", use_container_width=True, disabled=scan_file is None):
+            try:
+                saved_path = save_uploaded_scan_report(output_dir, scan_file)
+                findings = parse_scan_report(saved_path)
+                save_parsed_scan_findings(output_dir, findings)
+                clear_dashboard_cache()
+                st.success(f"Parsed {len(findings)} scanner finding(s) from {saved_path.name}.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Scan report was not parsed: {exc}")
+
+    if parsed_scan_findings:
+        st.subheader("Uploaded Scanner Findings")
+        scan_df = pd.DataFrame(parsed_scan_findings)
+        scan_cols = [col for col in ["Software Name", "Version", "CVE", "Severity", "Risk Level", "Scanner Source", "Source File", "Parsed At"] if col in scan_df.columns]
+        st.dataframe(style_operational_table(scan_df[scan_cols]), use_container_width=True, hide_index=True)
+
     if vuln_df.empty:
-        st.info("No vulnerability data found.")
+        st.info("No NVD vulnerability data found. Upload a scanner report or run the vulnerability workflow.")
         return
     risk_counts = vuln_df["Risk Level"].value_counts().to_dict()
     cols = st.columns(5)
