@@ -151,68 +151,64 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     role = current_role()
     qa_mode = role == ROLE_QA_ENGINEER
     package_mode = role == ROLE_RELEASE_ENGINEER
-    st.subheader("Manual Validation Trigger" if qa_mode else "Manual Scan Trigger")
-    left, right = st.columns([1.2, 1])
-    with left:
-        button_label = (
-            "Run QA Workflow"
-            if qa_mode
-            else ("Run Package Workflow" if package_mode else "Run Full Pipeline")
-        )
-        spinner_text = (
-            "Running QA workflow: shared scan plus QA validation and testcase impact..."
-            if qa_mode
-            else (
-                "Running package workflow: shared scan plus package readiness..."
-                if package_mode
-                else "Running full pipeline: shared scan, package readiness, QA validation, Excel, and email..."
-            )
-        )
-        if st.button(button_label, type="primary", use_container_width=True):
-            with st.spinner(spinner_text):
-                try:
-                    if qa_mode:
-                        result = ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh))
-                    elif package_mode:
-                        result = ctx.run_async(ctx.trigger_package_workflow(category, force_refresh))
-                    else:
-                        result = ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
-                    ctx.clear_dashboard_cache()
-                    st.session_state["last_operation_result"] = ctx.with_actor(result)
-                except Exception as exc:
-                    st.session_state["last_operation_result"] = ctx.with_actor({"error": str(exc)})
-    with right:
-        help_text = (
-            "Runs shared scan outputs and refreshes QA validation/testcase outputs without updating package-owned files."
-            if qa_mode
-            else (
-                "Runs shared scan outputs and refreshes package-owned readiness files without updating QA validation files."
-                if package_mode
-                else "Runs latest-version lookup, current inventory, comparison, vulnerability assessment, package readiness, QA validation, Excel, and email reporting."
-            )
-        )
-        st.markdown(
-            f"""
-            <div class="vm-card">
-                <div class="vm-posture-note">
-                    {help_text}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    role_workflow_label = (
+        "Run QA Workflow"
+        if qa_mode
+        else ("Run Package Workflow" if package_mode else "Run Full Pipeline")
+    )
+    role_email_label = (
+        "Send QA Report Email"
+        if qa_mode
+        else ("Send Package Report Email" if package_mode else "Send Version Report Email")
+    )
 
-    st.subheader("Individual Actions")
-    action_cols = st.columns(4)
-    actions = [
-        ("Fetch Latest Versions", "Fetching latest vendor versions...", lambda: ctx.run_async(ctx.trigger_fetch_latest_versions(category, force_refresh))),
-        ("Fetch Current Versions", "Resolving current versions from servers/PDF...", lambda: ctx.run_async(ctx.trigger_fetch_current_versions(category))),
-        ("Compare Versions", "Comparing current versions against latest versions...", ctx.trigger_compare_versions),
-        ("Send Version Report Email", "Building and sending the version report email...", ctx.trigger_send_report_email),
+    workflow_cols = st.columns(3)
+    workflow_actions = [
+        (
+            "Shared Discovery",
+            "Run Shared Scan",
+            "Finds latest/current versions, compares, checks vulnerabilities, generates the summary workbook, and sends the scan notification.",
+            "Running shared scan and scan notification...",
+            lambda: ctx.run_async(ctx.trigger_shared_scan(category, force_refresh)),
+            True,
+        ),
+        (
+            "Role Workflow",
+            role_workflow_label,
+            (
+                "Refreshes QA validation and testcase impact without updating package-owned files."
+                if qa_mode
+                else (
+                    "Refreshes package readiness without updating QA validation files."
+                    if package_mode
+                    else "Runs the complete admin workflow across shared scan, package readiness, QA validation, and reports."
+                )
+            ),
+            f"Running {role_workflow_label.lower()}...",
+            (
+                lambda: ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh))
+                if qa_mode
+                else (
+                    lambda: ctx.run_async(ctx.trigger_package_workflow(category, force_refresh))
+                    if package_mode
+                    else lambda: ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
+                )
+            ),
+            False,
+        ),
+        (
+            "Communication",
+            role_email_label,
+            "Sends a summary email with role-specific supporting attachments for detailed review.",
+            "Building and sending role report email...",
+            ctx.trigger_send_report_email,
+            False,
+        ),
     ]
-    for col, (label, spinner, action) in zip(action_cols, actions):
+    for col, (section, label, description, spinner, action, primary) in zip(workflow_cols, workflow_actions):
         with col:
-            if st.button(label, use_container_width=True):
+            st.markdown(f"**{section}**")
+            if st.button(label, type="primary" if primary else "secondary", use_container_width=True):
                 with st.spinner(spinner):
                     try:
                         result = action()
@@ -220,6 +216,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
                         st.session_state["last_operation_result"] = ctx.with_actor(result)
                     except Exception as exc:
                         st.session_state["last_operation_result"] = ctx.with_actor({"error": str(exc)})
+            st.caption(description)
 
     st.subheader("Execution Summary")
     ctx.render_operation_result(st.session_state.get("last_operation_result"))

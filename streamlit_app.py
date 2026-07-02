@@ -1048,6 +1048,10 @@ async def trigger_qa_workflow(category: str, force_refresh: bool) -> dict[str, A
     return await trigger_scoped_pipeline(category, force_refresh, "qa")
 
 
+async def trigger_shared_scan(category: str, force_refresh: bool) -> dict[str, Any]:
+    return await trigger_scoped_pipeline(category, force_refresh, "shared")
+
+
 async def trigger_fetch_latest_versions(category: str, force_refresh: bool) -> dict[str, Any]:
     state = runtime_state()
     config = state["config"]
@@ -2133,6 +2137,7 @@ def page_context() -> SimpleNamespace:
         trigger_full_pipeline=trigger_full_pipeline,
         trigger_package_workflow=trigger_package_workflow,
         trigger_qa_workflow=trigger_qa_workflow,
+        trigger_shared_scan=trigger_shared_scan,
         trigger_send_report_email=trigger_send_report_email,
         validate_cron_expression=validate_cron_expression,
         value=value,
