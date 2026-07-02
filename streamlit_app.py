@@ -2193,12 +2193,6 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         st.info("No QA validation data found. Run version comparison first.")
         return
     qa_df = add_environment_readiness(qa_df)
-    result_counts = qa_df["Test Result"].value_counts().to_dict()
-    cols = st.columns(4)
-    cols[0].metric("PASS", result_counts.get("PASS", 0))
-    cols[1].metric("FAIL", result_counts.get("FAIL", 0))
-    cols[2].metric("WARNING", result_counts.get("WARNING", 0))
-    cols[3].metric("NOT TESTED", result_counts.get("NOT TESTED", 0))
     columns = [
         "Software Name",
         "Package Version",
@@ -2239,17 +2233,28 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     latest_signoff = load_qa_signoff(qa_output_dir)
 
     st.subheader("QA Validation Summary")
-    summary_cols = st.columns(5)
-    summary_cols[0].metric("Total Test Cases", qa_summary["total_test_cases"])
-    summary_cols[1].metric("Executed Test Cases", qa_summary["executed_test_cases"])
-    summary_cols[2].metric("Coverage", f"{qa_summary['coverage_percent']:g}%")
-    summary_cols[3].metric("Fully Tested", qa_summary["fully_tested"])
-    summary_cols[4].metric("Last Signoff", latest_signoff.get("status", "Not Signed Off"))
+    result_counts = qa_df["Test Result"].value_counts().to_dict()
+    validation_cols = st.columns(6)
+    validation_cols[0].metric("Total Software", qa_summary["total_software"])
+    validation_cols[1].metric("PASS", result_counts.get("PASS", 0))
+    validation_cols[2].metric("FAIL", result_counts.get("FAIL", 0))
+    validation_cols[3].metric("WARNING", result_counts.get("WARNING", 0))
+    validation_cols[4].metric("NOT TESTED", result_counts.get("NOT TESTED", 0))
+    validation_cols[5].metric("Last Signoff", latest_signoff.get("status", "Not Signed Off"))
     if latest_signoff:
         st.caption(
             f"Last signed by {latest_signoff.get('signed_by', 'unknown')} on "
             f"{latest_signoff.get('signed_date', 'not available')}."
         )
+
+    st.subheader("QA Test Case Summary")
+    testcase_summary_cols = st.columns(6)
+    testcase_summary_cols[0].metric("Total Test Cases", qa_summary["total_test_cases"])
+    testcase_summary_cols[1].metric("Executed Test Cases", qa_summary["executed_test_cases"])
+    testcase_summary_cols[2].metric("Test Case Coverage %", f"{qa_summary['coverage_percent']:g}%")
+    testcase_summary_cols[3].metric("Fully Tested Software", qa_summary["fully_tested"])
+    testcase_summary_cols[4].metric("Partially Tested Software", qa_summary["partially_tested"])
+    testcase_summary_cols[5].metric("Not Started Software", qa_summary["not_tested"])
 
     searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
 
