@@ -2295,25 +2295,35 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     with st.form("manual_qa_update_form"):
         form_cols = st.columns([1.2, 1, 1])
         software_name = form_cols[0].selectbox("Software", qa_df["Software Name"].tolist())
+        selected_record = qa_df[qa_df["Software Name"] == software_name].iloc[0]
+        selected_key = "".join(ch if ch.isalnum() else "_" for ch in str(software_name))
+        installation_options = ["Not Tested", "Installed Successfully", "Failed", "Rollback Completed", "Pending Restart", "No Deployment Required"]
+        result_options = ["NOT TESTED", "PASS", "FAIL", "WARNING", "BASELINE VERIFIED"]
+        current_installation = str(selected_record.get("Installation Status") or "Not Tested")
+        current_result = str(selected_record.get("Test Result") or "NOT TESTED")
         installation_status = form_cols[1].selectbox(
             "Installation Status",
-            ["Not Tested", "Installed Successfully", "Failed", "Rollback Completed", "Pending Restart", "No Deployment Required"],
+            installation_options,
+            index=installation_options.index(current_installation) if current_installation in installation_options else 0,
+            key=f"qa_installation_{selected_key}",
         )
         test_result = form_cols[2].selectbox(
             "Test Result",
-            ["NOT TESTED", "PASS", "FAIL", "WARNING", "BASELINE VERIFIED"],
+            result_options,
+            index=result_options.index(current_result) if current_result in result_options else 0,
+            key=f"qa_result_{selected_key}",
         )
-        selected_record = qa_df[qa_df["Software Name"] == software_name].iloc[0]
         selected_test_case_count = safe_int(selected_record.get("Test Case Count"))
         current_executed = safe_int(selected_record.get("Test Cases Executed"))
         executed_cols = st.columns([1, 1])
-        executed_cols[0].number_input("Test Case Count", value=selected_test_case_count, min_value=0, disabled=True)
+        executed_cols[0].number_input("Test Case Count", value=selected_test_case_count, min_value=0, disabled=True, key=f"qa_count_{selected_key}")
         test_cases_executed = executed_cols[1].number_input(
             "Test Cases Executed",
             min_value=0,
             max_value=selected_test_case_count if selected_test_case_count else None,
             value=min(current_executed, selected_test_case_count) if selected_test_case_count else current_executed,
             step=1,
+            key=f"qa_executed_{selected_key}",
         )
         coverage_label = (
             f"{((test_cases_executed / selected_test_case_count) * 100):.1f}%".replace(".0%", "%")
@@ -2321,7 +2331,12 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             else "Not Required"
         )
         st.caption(f"Calculated test case coverage: {coverage_label}")
-        notes = st.text_area("QA Notes", placeholder="Add install result, validation notes, known issues, or rollback details.")
+        notes = st.text_area(
+            "QA Notes",
+            value=str(selected_record.get("Test Notes") or ""),
+            placeholder="Add install result, validation notes, known issues, or rollback details.",
+            key=f"qa_notes_{selected_key}",
+        )
         date_cols = st.columns([1, 1, 1])
         test_date = date_cols[0].date_input("Test Date", value=datetime.now().date())
         tested_by = date_cols[1].text_input("Tested By", value=current_user().get("display_name", current_user().get("username", "")))
