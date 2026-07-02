@@ -2292,29 +2292,29 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
 
     st.subheader("Manual QA Update")
     st.caption("Use this after QA has installed or validated a package. This updates output/qa_validation.json and optionally stores evidence under output/qa_evidence.")
+    software_name = st.selectbox("Software", qa_df["Software Name"].tolist(), key="manual_qa_software_selector")
+    selected_record = qa_df[qa_df["Software Name"] == software_name].iloc[0]
+    selected_key = "".join(ch if ch.isalnum() else "_" for ch in str(software_name))
+    installation_options = ["Not Tested", "Installed Successfully", "Failed", "Rollback Completed", "Pending Restart", "No Deployment Required"]
+    result_options = ["NOT TESTED", "PASS", "FAIL", "WARNING", "BASELINE VERIFIED"]
+    current_installation = str(selected_record.get("Installation Status") or "Not Tested")
+    current_result = str(selected_record.get("Test Result") or "NOT TESTED")
+    selected_test_case_count = safe_int(selected_record.get("Test Case Count"))
+    current_executed = safe_int(selected_record.get("Test Cases Executed"))
     with st.form("manual_qa_update_form"):
-        form_cols = st.columns([1.2, 1, 1])
-        software_name = form_cols[0].selectbox("Software", qa_df["Software Name"].tolist())
-        selected_record = qa_df[qa_df["Software Name"] == software_name].iloc[0]
-        selected_key = "".join(ch if ch.isalnum() else "_" for ch in str(software_name))
-        installation_options = ["Not Tested", "Installed Successfully", "Failed", "Rollback Completed", "Pending Restart", "No Deployment Required"]
-        result_options = ["NOT TESTED", "PASS", "FAIL", "WARNING", "BASELINE VERIFIED"]
-        current_installation = str(selected_record.get("Installation Status") or "Not Tested")
-        current_result = str(selected_record.get("Test Result") or "NOT TESTED")
-        installation_status = form_cols[1].selectbox(
+        form_cols = st.columns([1, 1])
+        installation_status = form_cols[0].selectbox(
             "Installation Status",
             installation_options,
             index=installation_options.index(current_installation) if current_installation in installation_options else 0,
             key=f"qa_installation_{selected_key}",
         )
-        test_result = form_cols[2].selectbox(
+        test_result = form_cols[1].selectbox(
             "Test Result",
             result_options,
             index=result_options.index(current_result) if current_result in result_options else 0,
             key=f"qa_result_{selected_key}",
         )
-        selected_test_case_count = safe_int(selected_record.get("Test Case Count"))
-        current_executed = safe_int(selected_record.get("Test Cases Executed"))
         executed_cols = st.columns([1, 1])
         executed_cols[0].number_input("Test Case Count", value=selected_test_case_count, min_value=0, disabled=True, key=f"qa_count_{selected_key}")
         test_cases_executed = executed_cols[1].number_input(
