@@ -1468,7 +1468,7 @@ def normalize_testcase_impact(data: dict[str, Any]) -> pd.DataFrame:
             "Software Name": value(item, "Software Name"),
             "Current Version": value(item, "Current Version"),
             "Target Version": value(item, "Target Version"),
-            "Test Coverage": value(item, "Test Coverage", default="Not Found"),
+            "Test Case Source": value(item, "Test Case Source", "Test Coverage", default="Not Found"),
             "Test Case ID": value(item, "Test Case ID"),
             "Test Case Name": value(item, "Test Case Name"),
             "Test Type": value(item, "Test Type"),
@@ -2194,7 +2194,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         "Test Case Count",
         "Test Cases Executed",
         "Test Case Coverage %",
-        "Test Coverage",
+        "Test Case Source",
         "Test Date",
         "Tested By",
         "Test Notes",
@@ -2219,7 +2219,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         else "Not Required",
         axis=1,
     )
-    qa_df["Test Coverage"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
+    qa_df["Test Case Source"] = qa_df["Software Name"].map(lambda name: impacted.get(name, {}).get("Test Coverage", "Not Required"))
     searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
 
     testcase_df = normalize_testcase_impact(impact)
@@ -2235,7 +2235,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         metric_cols[3].metric("Recommended Test Cases", int(impact.get("summary", {}).get("total_recommended_test_cases", 0)))
         display_cols = [
             "Software Name",
-            "Test Coverage",
+            "Test Case Source",
             "Test Case ID",
             "Test Case Name",
             "Test Type",
@@ -2244,7 +2244,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
             "Owner",
             "Applicable Version",
         ]
-        searchable_table(testcase_df[display_cols], "testcase_impact", ["Test Coverage", "Priority", "Test Type", "Owner"])
+        searchable_table(testcase_df[display_cols], "testcase_impact", ["Test Case Source", "Priority", "Test Type", "Owner"])
         if testcase_impact_excel_file.exists():
             st.download_button(
                 "Download Recommended Test Case Plan",
