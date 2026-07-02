@@ -707,6 +707,46 @@ def build_qa_validation(
     return rows
 
 
+MANUAL_QA_FIELDS = {
+    "Installation Status",
+    "Test Result",
+    "Test Notes",
+    "Test Date",
+    "Tested By",
+    "Evidence File",
+    "Manual QA Updated",
+    "Last QA Update",
+    "Test Case Count",
+    "Test Cases Executed",
+    "Test Case Coverage %",
+    "Functional Validation",
+}
+
+
+def merge_existing_qa_updates(
+    generated: dict[str, dict[str, Any]],
+    qa_path: str,
+) -> dict[str, dict[str, Any]]:
+    if not os.path.exists(qa_path):
+        return generated
+    try:
+        with open(qa_path, "r", encoding="utf-8") as fh:
+            existing = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return generated
+    if not isinstance(existing, dict):
+        return generated
+
+    for name, generated_record in generated.items():
+        existing_record = existing.get(name)
+        if not isinstance(existing_record, dict) or not existing_record.get("Manual QA Updated"):
+            continue
+        for field in MANUAL_QA_FIELDS:
+            if field in existing_record:
+                generated_record[field] = existing_record[field]
+    return generated
+
+
 def build_compatibility_assessment(
     comparison: dict[str, Any],
     readiness: dict[str, Any],
@@ -744,6 +784,7 @@ def save_workspace_outputs(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     readiness = build_package_readiness(comparison, latest, vulnerabilities) if comparison else {}
     qa_validation = build_qa_validation(comparison, readiness, software_metadata, vendor_requirements) if comparison else {}
+    qa_validation = merge_existing_qa_updates(qa_validation, qa_path)
     for path, payload in ((package_path, readiness), (qa_path, qa_validation)):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
