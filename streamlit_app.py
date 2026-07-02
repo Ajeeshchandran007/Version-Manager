@@ -1597,11 +1597,12 @@ def render_app_header(page: str, workflow_status: str, last_scan: str) -> None:
 
 
 def section_title(title: str, subtitle: str = "") -> None:
+    subtitle_html = f"<p>{subtitle}</p>" if subtitle else ""
     st.markdown(
         f"""
         <div class="vm-title">
             <h1>{title}</h1>
-            <p>{subtitle}</p>
+            {subtitle_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -2188,7 +2189,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     if current_role() not in {ROLE_ADMIN, ROLE_QA_ENGINEER}:
         render_access_denied("Administrator or QA Engineer")
         return
-    section_title("QA Validation", "Installation verification, functional checks, package verification, and deployment test status.")
+    section_title("QA Validation Dashboard", "")
     if qa_df.empty:
         st.info("No QA validation data found. Run version comparison first.")
         return
@@ -2232,7 +2233,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     qa_output_dir = active_output_path("__placeholder__").parent
     latest_signoff = load_qa_signoff(qa_output_dir)
 
-    st.subheader("QA Validation Summary")
+    st.subheader("QA Validation Dashboard")
     result_counts = qa_df["Test Result"].value_counts().to_dict()
     validation_cols = st.columns(6)
     validation_cols[0].metric("Total Software", qa_summary["total_software"])
@@ -2252,9 +2253,9 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     testcase_summary_cols[0].metric("Total Test Cases", qa_summary["total_test_cases"])
     testcase_summary_cols[1].metric("Executed Test Cases", qa_summary["executed_test_cases"])
     testcase_summary_cols[2].metric("Test Case Coverage %", f"{qa_summary['coverage_percent']:g}%")
-    testcase_summary_cols[3].metric("Fully Tested Software", qa_summary["fully_tested"])
-    testcase_summary_cols[4].metric("Partially Tested Software", qa_summary["partially_tested"])
-    testcase_summary_cols[5].metric("Not Started Software", qa_summary["not_tested"])
+    testcase_summary_cols[3].metric("Fully Tested", qa_summary["fully_tested"])
+    testcase_summary_cols[4].metric("Partially Tested", qa_summary["partially_tested"])
+    testcase_summary_cols[5].metric("Not Started", qa_summary["not_tested"])
 
     searchable_table(qa_df[columns], "qa_validation", ["Installation Status", "Test Result", "Environment Readiness"])
 
