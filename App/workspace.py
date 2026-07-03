@@ -143,7 +143,7 @@ def relpath(path: Path) -> str:
 def team_workspace_output_dir(team: str | None = None, release_line: str | None = None) -> Path:
     team = team or active_team_name()
     release_line = release_line or active_release_line(team)
-    if release_line != WORKING_RELEASE_LABEL:
+    if release_line and release_line != WORKING_RELEASE_LABEL:
         if team == DEFAULT_TEAM_LABEL:
             return WORKSPACES_DIR / DEFAULT_TEAM_LABEL / "releases" / safe_path_name(release_line) / "output"
         return WORKSPACES_DIR / team_name_to_path_name(team) / "releases" / safe_path_name(release_line) / "output"
@@ -159,7 +159,16 @@ def active_output_path(filename: str) -> Path:
 
 
 def active_config(config: dict[str, Any]) -> dict[str, Any]:
-    return scoped_config_for_context(config, active_team_name(), active_release_line())
+    team = active_team_name()
+    release_line = active_release_line(team)
+    if not release_line:
+        scoped = json.loads(json.dumps(config))
+        output_files = scoped.setdefault("output_files", {})
+        output_root = team_workspace_output_dir(team, "")
+        for key, filename in RELEASE_OUTPUT_KEYS.items():
+            output_files[key] = relpath(output_root / filename)
+        return scoped
+    return scoped_config_for_context(config, team, release_line)
 
 
 def scoped_config_for_context(config: dict[str, Any], team: str, release_line: str) -> dict[str, Any]:
