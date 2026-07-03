@@ -19,7 +19,7 @@ from App.workspace import (
 )
 
 
-def render_context_selector(ctx: Any, location: str = "dashboard") -> None:
+def render_context_selector(ctx: Any, location: str = "dashboard") -> dict[str, Any]:
     teams = allowed_teams_for_user()
     current_team = active_team_name()
     if len(teams) == 1:
@@ -40,6 +40,12 @@ def render_context_selector(ctx: Any, location: str = "dashboard") -> None:
         st.rerun()
 
     releases = list_release_lines(selected_team)
+    if not releases:
+        st.error(
+            f"No product release input found for {selected_team}. Add a release-specific software.yml under "
+            f"Input/teams/{selected_team}/releases/<release>/software.yml before running workflows."
+        )
+        return {"ready": False, "team": selected_team, "release": ""}
     current_release = active_release_line(selected_team)
     selected_release = st.selectbox(
         "Product Version / Release Line",
@@ -51,6 +57,7 @@ def render_context_selector(ctx: Any, location: str = "dashboard") -> None:
         st.session_state["active_release_line"] = selected_release
         ctx.clear_dashboard_cache()
         st.rerun()
+    return {"ready": True, "team": selected_team, "release": selected_release}
 
 
 def render_operations(config: dict[str, Any], ctx: Any) -> None:
@@ -59,6 +66,10 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
         return
 
     ctx.section_title("Operations", "Run scans now, review the automatic schedule, and execute individual validation steps.")
+    release_context = render_context_selector(ctx, "operations")
+    release_context_ready = bool(release_context.get("ready"))
+    run_team = str(release_context.get("team") or active_team_name())
+    run_release = str(release_context.get("release") or active_release_line(run_team))
     st.markdown(
         """
         <div class="vm-card">
@@ -76,8 +87,8 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     col1, col2, col3 = st.columns([1.1, 1, 1])
     with col1:
         st.metric("Run Context", active_team_name())
-        st.caption(f"Release Line: {active_release_line()}")
-        st.caption(f"Input: {input_path}")
+        st.caption(f"Release Line: {active_release_line() or 'Missing release input'}")
+        st.caption(f"Input: {input_path if release_context_ready else 'Not available'}")
     with col2:
         force_refresh = st.toggle(
             "Get Fresh Data",
@@ -166,11 +177,11 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
         else ("Send Package Report Email" if package_mode else "Send Version Report Email")
     )
     if qa_mode:
-        role_workflow_action = lambda: ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh))
+        role_workflow_action = lambda: ctx.run_async(ctx.trigger_qa_workflow(category, force_refresh, run_team, run_release))
     elif package_mode:
-        role_workflow_action = lambda: ctx.run_async(ctx.trigger_package_workflow(category, force_refresh))
+        role_workflow_action = lambda: ctx.run_async(ctx.trigger_package_workflow(category, force_refresh, run_team, run_release))
     else:
-        role_workflow_action = lambda: ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh))
+        role_workflow_action = lambda: ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh, run_team, run_release))
 
     workflow_cols = st.columns(3)
     workflow_actions = [
@@ -179,7 +190,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
             "Run Scan",
             "Finds latest/current versions, compares them, and refreshes compatibility data without updating package or security-owned outputs.",
             "Running shared version scan...",
-            lambda: ctx.run_async(ctx.trigger_shared_scan(category, force_refresh)),
+            lambda: ctx.run_async(ctx.trigger_shared_scan(category, force_refresh, run_team, run_release)),
             True,
         ),
         (
@@ -210,7 +221,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     for col, (section, label, description, spinner, action, primary) in zip(workflow_cols, workflow_actions):
         with col:
             st.markdown(f"**{section}**")
-            if st.button(label, type="primary" if primary else "secondary", use_container_width=True):
+            if st.button(label, type="primary" if primary else "secondary", use_container_width=True, disabled=not release_context_ready):
                 with st.spinner(spinner):
                     try:
                         result = action()

@@ -212,6 +212,8 @@ def _assess_vulnerabilities(
 
 def _refresh_state_config(state: dict) -> dict:
     """Reload config.json into a long-running MCP state when the file changes."""
+    if state.get("scoped_config"):
+        return state["config"]
     current_mtime = config_mtime()
     if current_mtime and current_mtime != state.get("config_mtime"):
         state["config"] = load_config()
@@ -329,7 +331,7 @@ async def lifespan(server: FastMCP):
     cron_expr = state.get("active_schedule_cron", "")
     category = state.get("active_schedule_category", config.get("default_category", "ALL"))
     scheduler.start()
-    logger.info(f"Scheduler started — cron='{cron_expr}', category='{category}'")
+    logger.info(f"Scheduler started - cron='{cron_expr}', category='{category}'")
 
     yield state                          # <-- yield the dict as lifespan context
 
@@ -347,9 +349,9 @@ async def _resolve_current_version(querier: ServerQuerier, reader: PDFReader, na
         result.setdefault("source", "live server")
         return result
 
-    logger.info(f"'{name}': live server unavailable/empty — falling back to PDF.")
+    logger.info(f"'{name}': live server unavailable/empty - falling back to PDF.")
     pdf_result = await reader.fetch(name)
-    pdf_result["source"] = "PDF fallback — server unreachable"
+    pdf_result["source"] = "PDF fallback - server unreachable"
     return pdf_result
 
 
@@ -388,7 +390,7 @@ async def _run_pipeline(
     if not software_list:
         return {"error": f"No software found for category '{category}'"}
 
-    logger.info(f"Pipeline started — {len(software_list)} items, category='{category}'")
+    logger.info(f"Pipeline started - {len(software_list)} items, category='{category}'")
 
     # Step 1 — Latest versions from web
     logger.info("Step 1: Fetching latest versions from web...")
@@ -402,10 +404,10 @@ async def _run_pipeline(
 
     out = _active_output_write_path(config, "latest_version_json", "output/latest_versions.json")
     _save_json(latest, out)
-    logger.info(f"Latest versions saved → {_resolve_path(out)}")
+    logger.info(f"Latest versions saved -> {_resolve_path(out)}")
 
     # Step 2 — Current versions: live server first, PDF fallback
-    logger.info("Step 2: Resolving current versions (server → PDF fallback)...")
+    logger.info("Step 2: Resolving current versions (server -> PDF fallback)...")
     current: dict[str, dict] = {}
     scanned_at = datetime.now().astimezone().isoformat()
     with observed_step("fetch_current_versions", trace_id, category=category, total=len(software_list)):
@@ -420,7 +422,7 @@ async def _run_pipeline(
 
     out = _active_output_write_path(config, "current_version_json", "output/current_versions.json")
     _save_json(current, out)
-    logger.info(f"Current versions saved → {_resolve_path(out)}")
+    logger.info(f"Current versions saved -> {_resolve_path(out)}")
 
     # Step 3 — Compare
     logger.info("Step 3: Comparing versions...")
@@ -429,7 +431,7 @@ async def _run_pipeline(
 
     out = _active_output_write_path(config, "comparison_report_json", "output/comparison_report.json")
     _save_json(report, out)
-    logger.info(f"Comparison report saved → {_resolve_path(out)}")
+    logger.info(f"Comparison report saved -> {_resolve_path(out)}")
 
     vulnerabilities = {}
     vulnerability_path = None

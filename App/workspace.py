@@ -92,8 +92,6 @@ def active_team_name() -> str:
 def list_release_lines(team: str | None = None) -> list[str]:
     team = team or active_team_name()
     releases: list[str] = []
-    if team_input_software_path(team).exists():
-        releases.append(WORKING_RELEASE_LABEL)
     releases_dir = team_input_release_root(team)
     if releases_dir.exists():
         releases.extend(
@@ -101,16 +99,18 @@ def list_release_lines(team: str | None = None) -> list[str]:
             for path in releases_dir.iterdir()
             if path.is_dir() and (path / "software.yml").exists()
         )
-    return releases or [WORKING_RELEASE_LABEL]
+    if releases:
+        return sorted(releases)
+    return []
 
 
 def active_release_line(team: str | None = None) -> str:
     team = team or active_team_name()
-    release = st.session_state.get("active_release_line", WORKING_RELEASE_LABEL)
+    release = st.session_state.get("active_release_line", "")
     releases = list_release_lines(team)
     if release in releases:
         return release
-    return releases[0]
+    return releases[0] if releases else ""
 
 
 def team_input_file_path(team: str, filename: str, release_line: str | None = None) -> Path:
@@ -159,15 +159,21 @@ def active_output_path(filename: str) -> Path:
 
 
 def active_config(config: dict[str, Any]) -> dict[str, Any]:
-    team = active_team_name()
+    return scoped_config_for_context(config, active_team_name(), active_release_line())
+
+
+def scoped_config_for_context(config: dict[str, Any], team: str, release_line: str) -> dict[str, Any]:
     scoped = json.loads(json.dumps(config))
     input_files = scoped.setdefault("input_files", {})
-    release_line = active_release_line(team)
+    if not release_line:
+        raise FileNotFoundError(
+            f"No product release input found for {team}. Expected Input/teams/{team}/releases/<release>/software.yml."
+        )
     input_root = team_input_software_path(team, release_line).parent
     for key, filename in TEAM_INPUT_FILES.items():
         input_files[key] = relpath(input_root / filename)
     output_files = scoped.setdefault("output_files", {})
-    output_root = active_output_path("__placeholder__").parent
+    output_root = team_workspace_output_dir(team, release_line)
     for key, filename in RELEASE_OUTPUT_KEYS.items():
         output_files[key] = relpath(output_root / filename)
     return scoped

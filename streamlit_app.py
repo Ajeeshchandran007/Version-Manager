@@ -60,6 +60,8 @@ from App.workspace import (
     create_team_snapshot,
     list_teams,
     project_path,
+    scoped_config_for_context,
+    team_workspace_output_dir,
     team_input_software_path,
 )
 from App.workflow_locks import WorkflowAlreadyRunning, workflow_lock
@@ -761,10 +763,14 @@ def run_async(coro: Any) -> Any:
             loop.close()
 
 
-def runtime_state() -> dict[str, Any]:
-    config = active_config(load_config())
+def runtime_state(team: str | None = None, release: str | None = None) -> dict[str, Any]:
+    if team is not None and release is not None:
+        config = scoped_config_for_context(load_config(), team, release)
+    else:
+        config = active_config(load_config())
     return {
         "config": config,
+        "scoped_config": team is not None and release is not None,
         "version_fetcher": VersionFetcher(),
         "pdf_reader": PDFReader(config),
         "server_querier": ServerQuerier(),
@@ -772,13 +778,26 @@ def runtime_state() -> dict[str, Any]:
     }
 
 
-def app_state_db_path() -> Path:
+def app_state_db_path(team: str | None = None, release: str | None = None) -> Path:
+    if team is not None and release is not None:
+        return team_workspace_output_dir(team, release) / "app_state.db"
     return active_output_path("__placeholder__").parent / "app_state.db"
 
 
 def workflow_owner() -> str:
     user = current_user()
     return str(user.get("username") or user.get("display_name") or "unknown")
+
+
+def active_workflow_context(team: str | None = None, release: str | None = None) -> dict[str, str]:
+    team = team or active_team_name()
+    release = release or active_release_line(team)
+    output_dir = team_workspace_output_dir(team, release)
+    return {
+        "active_team": team,
+        "active_release": release,
+        "active_output_dir": str(output_dir),
+    }
 
 
 def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
@@ -959,16 +978,23 @@ def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str, Any]:
+async def trigger_full_pipeline(
+    category: str,
+    force_refresh: bool,
+    team: str | None = None,
+    release: str | None = None,
+) -> dict[str, Any]:
+    workflow_team = team or active_team_name()
+    workflow_release = release or active_release_line(workflow_team)
     try:
         with workflow_lock(
-            app_state_db_path(),
-            team=active_team_name(),
-            release=active_release_line(),
+            app_state_db_path(workflow_team, workflow_release),
+            team=workflow_team,
+            release=workflow_release,
             scope="workflow",
             owner=workflow_owner(),
         ):
-            state = runtime_state()
+            state = runtime_state(workflow_team, workflow_release)
             workflow = LangGraphVersionManager(build_streamlit_agent_tools(state))
             final_state = await workflow.run(
                 "Run the full software version, security, package readiness, compatibility, QA validation, and reporting workflow.",
@@ -986,6 +1012,7 @@ async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str,
     return {
         "operation": "full_pipeline",
         "workflow": "LangGraph Supervisor",
+        **active_workflow_context(workflow_team, workflow_release),
         "workflow_status": final_state.get("workflow_status"),
         "agent_messages": final_state.get("messages", []),
         "cache_mode": "fresh" if force_refresh else "use_cache",
@@ -1008,16 +1035,24 @@ async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str,
     }
 
 
-async def trigger_scoped_pipeline(category: str, force_refresh: bool, workflow_scope: str) -> dict[str, Any]:
+async def trigger_scoped_pipeline(
+    category: str,
+    force_refresh: bool,
+    workflow_scope: str,
+    team: str | None = None,
+    release: str | None = None,
+) -> dict[str, Any]:
+    workflow_team = team or active_team_name()
+    workflow_release = release or active_release_line(workflow_team)
     try:
         with workflow_lock(
-            app_state_db_path(),
-            team=active_team_name(),
-            release=active_release_line(),
+            app_state_db_path(workflow_team, workflow_release),
+            team=workflow_team,
+            release=workflow_release,
             scope="workflow",
             owner=workflow_owner(),
         ):
-            state = runtime_state()
+            state = runtime_state(workflow_team, workflow_release)
             summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope=workflow_scope)
     except WorkflowAlreadyRunning as exc:
         return {"error": str(exc), "operation": f"{workflow_scope}_workflow"}
@@ -1026,6 +1061,7 @@ async def trigger_scoped_pipeline(category: str, force_refresh: bool, workflow_s
     return {
         "operation": f"{workflow_scope}_workflow",
         "workflow": "Scoped Backend Pipeline",
+        **active_workflow_context(workflow_team, workflow_release),
         "workflow_scope": summary.get("workflow_scope"),
         "cache_mode": summary.get("cache_mode"),
         "total": summary.get("total", 0),
@@ -1046,16 +1082,31 @@ async def trigger_scoped_pipeline(category: str, force_refresh: bool, workflow_s
     }
 
 
-async def trigger_package_workflow(category: str, force_refresh: bool) -> dict[str, Any]:
-    return await trigger_scoped_pipeline(category, force_refresh, "package")
+async def trigger_package_workflow(
+    category: str,
+    force_refresh: bool,
+    team: str | None = None,
+    release: str | None = None,
+) -> dict[str, Any]:
+    return await trigger_scoped_pipeline(category, force_refresh, "package", team, release)
 
 
-async def trigger_qa_workflow(category: str, force_refresh: bool) -> dict[str, Any]:
-    return await trigger_scoped_pipeline(category, force_refresh, "qa")
+async def trigger_qa_workflow(
+    category: str,
+    force_refresh: bool,
+    team: str | None = None,
+    release: str | None = None,
+) -> dict[str, Any]:
+    return await trigger_scoped_pipeline(category, force_refresh, "qa", team, release)
 
 
-async def trigger_shared_scan(category: str, force_refresh: bool) -> dict[str, Any]:
-    return await trigger_scoped_pipeline(category, force_refresh, "shared")
+async def trigger_shared_scan(
+    category: str,
+    force_refresh: bool,
+    team: str | None = None,
+    release: str | None = None,
+) -> dict[str, Any]:
+    return await trigger_scoped_pipeline(category, force_refresh, "shared", team, release)
 
 
 async def trigger_fetch_latest_versions(category: str, force_refresh: bool) -> dict[str, Any]:
@@ -2092,6 +2143,8 @@ def render_operation_result(result: dict[str, Any] | None) -> None:
             title = "Full Pipeline Completed"
             summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and email notification were processed."
         cards = [
+            ("Team / Product", result.get("active_team", active_team_name()), "Workflow execution context"),
+            ("Release Line", result.get("active_release", active_release_line()), "Selected product version"),
             ("Applications Checked", result.get("total", 0), "Software records processed"),
             ("Updates Required", len(result.get("needs_update", [])), "Applications needing remediation"),
             ("Email Sent", "Yes" if result.get("email_sent") else "No", "Notification delivery status"),
@@ -2148,9 +2201,11 @@ def render_operation_result(result: dict[str, Any] | None) -> None:
     )
 
     if cards:
-        cols = st.columns(min(len(cards), 4))
-        for col, (label, val, help_text) in zip(cols, cards):
-            col.metric(label, val, help=help_text)
+        for start in range(0, len(cards), 4):
+            row_cards = cards[start:start + 4]
+            cols = st.columns(len(row_cards))
+            for col, (label, val, help_text) in zip(cols, row_cards):
+                col.metric(label, val, help=help_text)
 
     st.info(f"Next recommended action: {next_action}")
     if not result.get("email_sent", True) and result.get("email_error"):
