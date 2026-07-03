@@ -3363,10 +3363,6 @@ def render_input_upload(embedded: bool = False) -> None:
     upload_status = st.session_state.pop("input_upload_status", None)
     if upload_status:
         st.success(upload_status)
-    st.info(
-        "Files are saved to the app input folder for the selected team/release. "
-        "On Streamlit Cloud this storage can reset after redeploys; use SharePoint or another durable store for production retention."
-    )
 
     known_teams = list_teams()
     team_options = sorted(set(known_teams + ["Avamar", "DPS", "PackageTeam", "SourceOne"]))
@@ -3378,20 +3374,26 @@ def render_input_upload(embedded: bool = False) -> None:
         )
         custom_team = st.text_input("New Team Name", placeholder="Use only if the team is not listed")
         release_line = st.text_input("Product Version / Release Line", value=active_release_line(team), placeholder="Example: 7.2.11")
-        software_yml = st.file_uploader("software.yml", type=["yml", "yaml"])
-        sample_pdf = st.file_uploader("sample_version.pdf", type=["pdf"])
-        testcase_repo = st.file_uploader("testcaseRepository.xlsx", type=["xlsx"])
+        uploaded_files = st.file_uploader(
+            "Input Files",
+            type=["yml", "yaml", "pdf", "xlsx"],
+            accept_multiple_files=True,
+            help="software.yml is mandatory. Optional files: sample_version.pdf and testcaseRepository.xlsx.",
+        )
+        st.caption("Required: software.yml. Optional: sample_version.pdf, testcaseRepository.xlsx.")
         submitted = st.form_submit_button("Save Input Files", type="primary", use_container_width=True)
 
     if submitted:
         selected_team = (custom_team.strip() or team).strip()
         files: dict[str, bytes] = {}
-        if software_yml is not None:
-            files["software.yml"] = software_yml.getvalue()
-        if sample_pdf is not None:
-            files["sample_version.pdf"] = sample_pdf.getvalue()
-        if testcase_repo is not None:
-            files["testcaseRepository.xlsx"] = testcase_repo.getvalue()
+        for uploaded_file in uploaded_files or []:
+            filename = uploaded_file.name
+            if filename in {"software.yml", "software.yaml"}:
+                files["software.yml"] = uploaded_file.getvalue()
+            elif filename == "sample_version.pdf":
+                files["sample_version.pdf"] = uploaded_file.getvalue()
+            elif filename == "testcaseRepository.xlsx":
+                files["testcaseRepository.xlsx"] = uploaded_file.getvalue()
 
         success, message, saved_paths = save_uploaded_release_inputs(selected_team, release_line, files)
         if success:
