@@ -1,9 +1,9 @@
-"""SQLite-backed concurrent QA validation updates.
+"""Concurrent QA validation updates.
 
 The rest of the app still consumes ``qa_validation.json`` as a report artifact,
-but QA edits are persisted row-by-row in SQLite first. This gives us optimistic
-locking and prevents one QA engineer's save from overwriting another engineer's
-work on a different row.
+but QA edits are persisted row-by-row in PostgreSQL when DATABASE_URL is set,
+or SQLite locally otherwise. This gives us optimistic locking and prevents one
+QA engineer's save from overwriting another engineer's work on a different row.
 """
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from App.db import postgres_connection, using_postgres
 
 
 class QAUpdateConflict(RuntimeError):
@@ -27,6 +29,9 @@ def safe_int(raw: Any, default: int = 0) -> int:
 
 
 def init_qa_db(db_path: Path) -> None:
+    if using_postgres():
+        _init_qa_postgres()
+        return
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("""
@@ -75,6 +80,36 @@ def sync_json_to_db(
     """Import JSON rows into SQLite without overwriting newer DB rows."""
     init_qa_db(db_path)
     data = load_qa_validation(qa_file)
+    if using_postgres():
+        with postgres_connection() as con:
+            with con.cursor() as cur:
+                for software_name, record in data.items():
+                    revision = safe_int(record.get("QA Revision"), 0)
+                    cur.execute(
+                        """SELECT revision FROM qa_validation_rows
+                           WHERE team=%s AND release_line=%s AND software_name=%s""",
+                        (team, release_line, software_name),
+                    )
+                    if cur.fetchone():
+                        continue
+                    enriched = dict(record)
+                    enriched["QA Revision"] = revision
+                    cur.execute(
+                        """INSERT INTO qa_validation_rows
+                           (team, release_line, software_name, payload_json, revision, updated_by, updated_at)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            team,
+                            release_line,
+                            software_name,
+                            json.dumps(enriched),
+                            revision,
+                            str(enriched.get("Last QA Updated By") or ""),
+                            str(enriched.get("Last QA Update") or ""),
+                        ),
+                    )
+                con.commit()
+        return export_db_to_json(db_path, qa_file, team=team, release_line=release_line)
     with closing(sqlite3.connect(db_path)) as con:
         for software_name, record in data.items():
             revision = safe_int(record.get("QA Revision"), 0)
@@ -114,6 +149,30 @@ def export_db_to_json(
 ) -> dict[str, Any]:
     init_qa_db(db_path)
     rows: dict[str, Any] = {}
+    if using_postgres():
+        with postgres_connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """SELECT software_name, payload_json, revision, updated_by, updated_at
+                       FROM qa_validation_rows
+                       WHERE team=%s AND release_line=%s
+                       ORDER BY software_name""",
+                    (team, release_line),
+                )
+                db_rows = cur.fetchall()
+        for row in db_rows:
+            payload = json.loads(row["payload_json"])
+            payload["QA Revision"] = int(row["revision"])
+            if row["updated_by"]:
+                payload["Last QA Updated By"] = row["updated_by"]
+            if row["updated_at"]:
+                payload["Last QA Update"] = row["updated_at"]
+            rows[row["software_name"]] = payload
+        qa_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = qa_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        tmp.replace(qa_file)
+        return rows
     with closing(sqlite3.connect(db_path)) as con:
         con.row_factory = sqlite3.Row
         for row in con.execute(
@@ -153,6 +212,60 @@ def save_qa_row_update(
     sync_json_to_db(db_path, qa_file, team=team, release_line=release_line)
     evidence_path = _save_evidence(qa_file.parent / "qa_evidence", software_name, evidence_file)
     updated_at = datetime.now().isoformat(timespec="seconds")
+
+    if using_postgres():
+        with postgres_connection() as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """SELECT payload_json, revision FROM qa_validation_rows
+                       WHERE team=%s AND release_line=%s AND software_name=%s
+                       FOR UPDATE""",
+                    (team, release_line, software_name),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise ValueError(f"QA record not found for {software_name}")
+
+                current_revision = int(row["revision"])
+                if current_revision != expected_revision:
+                    raise QAUpdateConflict(
+                        f"{software_name} was updated by another user. Reload the QA page before saving."
+                    )
+
+                record = json.loads(row["payload_json"])
+                record.update(updates)
+                record["Manual QA Updated"] = True
+                record["Last QA Update"] = updated_at
+                record["Last QA Updated By"] = updated_by
+                record["QA Revision"] = current_revision + 1
+                if evidence_path:
+                    record["Evidence File"] = evidence_path
+
+                payload_json = json.dumps(record)
+                cur.execute(
+                    """UPDATE qa_validation_rows
+                       SET payload_json=%s, revision=%s, updated_by=%s, updated_at=%s
+                       WHERE team=%s AND release_line=%s AND software_name=%s""",
+                    (
+                        payload_json,
+                        current_revision + 1,
+                        updated_by,
+                        updated_at,
+                        team,
+                        release_line,
+                        software_name,
+                    ),
+                )
+                cur.execute(
+                    """INSERT INTO qa_update_audit
+                       (team, release_line, software_name, revision, updated_by, updated_at, payload_json)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (team, release_line, software_name, current_revision + 1, updated_by, updated_at, payload_json),
+                )
+                con.commit()
+
+        export_db_to_json(db_path, qa_file, team=team, release_line=release_line)
+        return record
 
     with closing(sqlite3.connect(db_path)) as con:
         con.row_factory = sqlite3.Row
@@ -256,6 +369,36 @@ def build_qa_update_payload(
         payload["Functional Validation"] = {}
 
     return payload
+
+
+def _init_qa_postgres() -> None:
+    with postgres_connection() as con:
+        with con.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS qa_validation_rows (
+                    team TEXT NOT NULL,
+                    release_line TEXT NOT NULL,
+                    software_name TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_by TEXT,
+                    updated_at TEXT,
+                    PRIMARY KEY (team, release_line, software_name)
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS qa_update_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    team TEXT NOT NULL,
+                    release_line TEXT NOT NULL,
+                    software_name TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    updated_by TEXT,
+                    updated_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                )
+            """)
+            con.commit()
 
 
 def _save_evidence(evidence_dir: Path, software_name: str, evidence_file: Any | None) -> str:
