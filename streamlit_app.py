@@ -1406,6 +1406,31 @@ def normalize_current(data: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def configured_inventory_from_active_software_yml() -> tuple[pd.DataFrame, Path]:
+    input_path = team_input_software_path(active_team_name(), active_release_line())
+    metadata = load_software_metadata(str(input_path), "ALL") if input_path.exists() else {}
+    rows = []
+    for name, details in metadata.items():
+        requirements = details.get("current_requirements", {}) if isinstance(details, dict) else {}
+        requirements = requirements if isinstance(requirements, dict) else {}
+        rows.append(
+            {
+                "Software Name": name,
+                "Vendor": vendor_for(name),
+                "Current Version": "Pending scan",
+                "Current CU": "",
+                "Server Name": "Pending scan",
+                "Environment": "Production",
+                "Last Scanned": "Not scanned",
+                "Source": "software.yml",
+                "OS Requirement": requirements.get("os", ""),
+                "Database Requirement": requirements.get("database_version", ""),
+                "Architecture": requirements.get("architecture", ""),
+            }
+        )
+    return pd.DataFrame(rows), input_path
+
+
 def normalize_latest(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
     for name, record in data.items():
@@ -2200,6 +2225,22 @@ def render_context_selector(location: str = "dashboard") -> None:
 
 def render_inventory(current_df: pd.DataFrame) -> None:
     section_title("Software Inventory", "Installed software inventory from live servers and document extraction.")
+    if current_df.empty:
+        configured_df, input_path = configured_inventory_from_active_software_yml()
+        if configured_df.empty:
+            st.warning(
+                "No generated inventory records were found, and no active software.yml input was found for "
+                f"{active_team_name()} / {active_release_line()}."
+            )
+            st.caption(f"Expected input file: {input_path}")
+            return
+        st.info(
+            "No scan output is available yet. Showing configured software from the active software.yml input. "
+            "Run the pipeline to populate discovered current versions, server details, QA data, and reports."
+        )
+        st.caption(f"Loaded input file: {input_path}")
+        searchable_table(configured_df.drop(columns=["Source"], errors="ignore"), "software_inventory_configured", ["Vendor", "Environment"])
+        return
     display_df = current_df.drop(columns=["Source"], errors="ignore")
     searchable_table(display_df, "software_inventory", ["Vendor", "Environment"])
 
