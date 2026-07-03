@@ -177,8 +177,8 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
         (
             "Version Scan",
             "Run Scan",
-            "Finds latest/current versions, compares, checks vulnerabilities, generates the summary workbook, and sends the scan notification.",
-            "Running shared scan and scan notification...",
+            "Finds latest/current versions, compares them, and refreshes compatibility data without updating package or security-owned outputs.",
+            "Running shared version scan...",
             lambda: ctx.run_async(ctx.trigger_shared_scan(category, force_refresh)),
             True,
         ),

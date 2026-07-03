@@ -77,7 +77,6 @@ from Core.workspace_assessment import (
     build_compatibility_assessment,
     build_package_readiness,
     build_qa_validation,
-    save_workspace_outputs,
 )
 from Utils.software_loader import load_software, load_software_metadata
 from Utils.utils import load_config, logger
@@ -1329,30 +1328,28 @@ def mixed_version_scheme(current_version: str, latest_version: str) -> bool:
     return max(current_parts[0], latest_parts[0]) >= 100 or abs(current_parts[0] - latest_parts[0]) >= 50
 
 
-def ensure_workspace_outputs(
+def load_workspace_outputs() -> tuple[dict[str, Any], dict[str, Any]]:
+    config = active_config(load_config())
+    package_path = project_path(config["output_files"].get("package_readiness_json", "output/package_readiness.json"))
+    qa_path = project_path(config["output_files"].get("qa_validation_json", "output/qa_validation.json"))
+    return load_json(str(package_path), file_mtime(package_path)), load_json(str(qa_path), file_mtime(qa_path))
+
+
+def build_transient_compatibility_df(
     comparison: dict[str, Any],
     latest: dict[str, Any],
-    vulnerabilities: dict[str, Any],
     vendor_requirements: dict[str, dict[str, Any]] | None = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> pd.DataFrame:
+    if not comparison:
+        return pd.DataFrame()
     config = active_config(load_config())
-    readiness, qa_validation = save_workspace_outputs(
+    compatibility = build_qa_validation(
         comparison,
-        latest,
-        vulnerabilities,
-        str(project_path(config["output_files"].get("package_readiness_json", "output/package_readiness.json"))),
-        str(project_path(config["output_files"].get("qa_validation_json", "output/qa_validation.json"))),
+        {},
         load_software_metadata(config["input_files"]["software_yml"], "ALL"),
         vendor_requirements,
     )
-    if comparison:
-        save_testcase_impact_outputs(
-            comparison,
-            str((BASE_DIR / config["input_files"].get("testcase_repository_xlsx", "Input/testcaseRepository.xlsx")).resolve()),
-            str(project_path(config["output_files"].get("testcase_impact_json", "output/testcase_impact.json"))),
-            str(project_path(config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx"))),
-        )
-    return readiness, qa_validation
+    return normalize_qa_validation(compatibility)
 
 
 async def resolve_vendor_compatibility_requirements(
@@ -2082,12 +2079,12 @@ def render_operation_result(result: dict[str, Any] | None) -> None:
     next_action = "Review the refreshed dashboard pages."
 
     if operation in {"full_pipeline", "shared_workflow", "package_workflow", "qa_workflow"}:
-        if current_role() == ROLE_QA_ENGINEER:
+        if operation == "shared_workflow":
+            title = "Shared Scan Completed"
+            summary = "Latest versions, current inventory, version comparison, and compatibility data were refreshed. Package and security-owned outputs were not updated."
+        elif current_role() == ROLE_QA_ENGINEER:
             title = "Validation Workflow Completed"
             summary = "Shared scan outputs and QA validation outputs were refreshed by the controlled backend workflow."
-        elif operation == "shared_workflow":
-            title = "Shared Scan Completed"
-            summary = "Latest versions, current inventory, comparison, vulnerability assessment, Excel output, and scan notification were processed."
         elif operation == "package_workflow":
             title = "Package Workflow Completed"
             summary = "Shared scan outputs and package readiness outputs were refreshed for the selected release."
@@ -3300,9 +3297,12 @@ def main() -> None:
     comparison_df = normalize_comparison(comparison, vulnerabilities)
     vuln_df = normalize_vulnerabilities(vulnerabilities)
     vendor_requirements = load_vendor_compatibility_requirements(comparison, latest) if comparison and latest else {}
-    package_readiness, qa_validation = ensure_workspace_outputs(comparison, latest, vulnerabilities, vendor_requirements)
+    package_readiness, qa_validation = load_workspace_outputs()
     readiness_df = normalize_package_readiness(package_readiness)
     qa_df = normalize_qa_validation(qa_validation)
+    compatibility_df = build_transient_compatibility_df(comparison, latest, vendor_requirements)
+    if compatibility_df.empty:
+        compatibility_df = qa_df
 
     workflow_status = "Completed" if not comparison_df.empty else "Not Run"
     last_scan = last_scan_time(latest, vulnerabilities)
@@ -3322,7 +3322,7 @@ def main() -> None:
     elif page == "Package Readiness":
         render_package_readiness(readiness_df)
     elif page == "Compatibility Check":
-        render_compatibility_check(qa_df)
+        render_compatibility_check(compatibility_df)
     elif page == "QA Validation":
         render_qa_validation(qa_df)
     elif page == "Vulnerability Assessment":

@@ -370,6 +370,7 @@ async def _run_pipeline(
     workflow_scope = (workflow_scope or "full").lower().strip()
     if workflow_scope not in {"shared", "package", "qa", "full"}:
         return {"error": f"Unsupported workflow_scope '{workflow_scope}'"}
+    write_security_outputs = workflow_scope in {"package", "full"}
     write_package_outputs = workflow_scope in {"package", "full"}
     write_qa_outputs = workflow_scope in {"qa", "full"}
 
@@ -430,14 +431,18 @@ async def _run_pipeline(
     _save_json(report, out)
     logger.info(f"Comparison report saved → {_resolve_path(out)}")
 
-    # Step 4 — Notify
-    logger.info("Step 4: Assessing vulnerabilities...")
-    with observed_step("check_vulnerabilities", trace_id, category=category, total=len(software_list)):
-        vulnerabilities = await _build_vulnerability_report(state, report, force_refresh=force_refresh)
+    vulnerabilities = {}
+    vulnerability_path = None
+    if write_security_outputs:
+        logger.info("Step 4: Assessing vulnerabilities...")
+        with observed_step("check_vulnerabilities", trace_id, category=category, total=len(software_list)):
+            vulnerabilities = await _build_vulnerability_report(state, report, force_refresh=force_refresh)
 
-    out = _active_output_write_path(config, "vulnerability_report_json", _vulnerability_path(config))
-    _save_json(vulnerabilities, out)
-    logger.info(f"Vulnerability report saved -> {_resolve_path(out)}")
+        vulnerability_path = _active_output_write_path(config, "vulnerability_report_json", _vulnerability_path(config))
+        _save_json(vulnerabilities, vulnerability_path)
+        logger.info(f"Vulnerability report saved -> {_resolve_path(vulnerability_path)}")
+    else:
+        logger.info("Step 4: Skipping vulnerability report for %s workflow.", workflow_scope)
 
     package_readiness = {}
     qa_validation = {}
@@ -477,10 +482,12 @@ async def _run_pipeline(
         logger.info(f"Test case impact saved -> {testcase_path}")
         logger.info(f"Test case impact workbook saved -> {testcase_excel_path}")
 
-    logger.info("Step 7: Generating Excel assessment workbook...")
-    excel_path = _active_output_write_path(config, "excel_assessment", _excel_assessment_path(config))
-    generate_excel_report(report, vulnerabilities, excel_path)
-    logger.info(f"Excel assessment saved -> {excel_path}")
+    excel_path = None
+    if write_security_outputs:
+        logger.info("Step 7: Generating Excel assessment workbook...")
+        excel_path = _active_output_write_path(config, "excel_assessment", _excel_assessment_path(config))
+        generate_excel_report(report, vulnerabilities, excel_path)
+        logger.info(f"Excel assessment saved -> {excel_path}")
 
     logger.info("Step 8: Sending notification email...")
     body = build_report(report, vulnerabilities)
@@ -507,7 +514,7 @@ async def _run_pipeline(
         "total":         len(software_list),
         "needs_update":  updates,
         "unknown":       unknown,
-        "vulnerability_report": _resolve_path(out),
+        "vulnerability_report": _resolve_path(vulnerability_path) if vulnerability_path else None,
         "package_readiness_report": _resolve_path(package_path) if package_path else None,
         "qa_validation_report": _resolve_path(qa_path) if qa_path else None,
         "testcase_impact_report": _resolve_path(testcase_path) if testcase_path else None,
