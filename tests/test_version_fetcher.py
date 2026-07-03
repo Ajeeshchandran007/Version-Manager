@@ -40,6 +40,29 @@ class VersionFetcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["Build Version"], "15.0.4470.1")
         self.assertEqual(result["Cumulative Update (CU)"], "CU32")
 
+    async def test_authoritative_exchange_lookup_uses_long_build_number(self):
+        html = """
+        <h2>Exchange Server 2019</h2>
+        <table>
+          <tr><td>Exchange Server 2019 CU15 Sep25HU</td><td>September 8, 2025</td><td>15.2.1748.37</td><td>15.02.1748.037</td></tr>
+          <tr><td>Exchange Server 2019 CU15 Jun26SU</td><td>June 9, 2026</td><td>15.2.1748.46</td><td>15.02.1748.046</td></tr>
+          <tr><td>Exchange Server 2019 CU14 Jun26SU</td><td>June 9, 2026</td><td>15.2.1544.41</td><td>15.02.1544.041</td></tr>
+        </table>
+        <h2>Exchange Server 2016</h2>
+        """
+        response = AsyncMock()
+        response.text = html
+        response.raise_for_status = lambda: None
+        client = AsyncMock()
+        client.get.return_value = response
+
+        with patch("httpx.AsyncClient") as async_client:
+            async_client.return_value.__aenter__.return_value = client
+            result = await _fetch_authoritative_latest("MS Exchange Server 2019")
+
+        self.assertEqual(result["Build Version"], "15.02.1748.046")
+        self.assertEqual(result["Cumulative Update (CU)"], "CU15")
+
 
 if __name__ == "__main__":
     unittest.main()

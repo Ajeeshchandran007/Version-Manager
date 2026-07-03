@@ -2,6 +2,7 @@
 """Fetches the LATEST version of software from the web using Tavily + OpenAI."""
 import datetime
 import re
+from html import unescape
 import httpx
 from langchain_tavily import TavilySearch
 from Core.cache import CacheManager, attach_cache_metadata, make_cache_key
@@ -158,9 +159,18 @@ async def _fetch_authoritative_latest(
     force_refresh: bool = False,
 ) -> dict | None:
     """Fetch known vendor pages directly where table structure is reliable."""
-    if software_name.strip().lower() != "sql server 2019":
-        return None
+    normalized_name = software_name.strip().lower()
+    if normalized_name == "sql server 2019":
+        return await _fetch_sql_server_latest(cache, force_refresh)
+    if "exchange" in normalized_name and "2019" in normalized_name:
+        return await _fetch_exchange_2019_latest(cache, force_refresh)
+    return None
 
+
+async def _fetch_sql_server_latest(
+    cache: CacheManager | None = None,
+    force_refresh: bool = False,
+) -> dict | None:
     url = "https://learn.microsoft.com/en-us/troubleshoot/sql/releases/sqlserver-2019/build-versions"
     cache_key = make_cache_key("vendor_source", url)
     html = cache.get("vendor_sources", cache_key, force_refresh=force_refresh) if cache else None
@@ -196,6 +206,85 @@ async def _fetch_authoritative_latest(
     build, cu = max(rows, key=lambda item: _version_tuple(item[0]))
     logger.info("Authoritative SQL Server lookup: build=%s cu=%s", build, cu)
     return {"Build Version": build, "Cumulative Update (CU)": cu}
+
+
+async def _fetch_exchange_2019_latest(
+    cache: CacheManager | None = None,
+    force_refresh: bool = False,
+) -> dict | None:
+    """Fetch the latest Exchange 2019 row from Microsoft Learn.
+
+    Exchange search snippets can expose partial build numbers such as
+    "1748.037". The authoritative table provides both the short and long
+    formats; use the long format so comparison with ExSetup ProductVersion is
+    apples-to-apples.
+    """
+    url = "https://learn.microsoft.com/en-us/exchange/new-features/build-numbers-and-release-dates"
+    cache_key = make_cache_key("vendor_source", url)
+    html = cache.get("vendor_sources", cache_key, force_refresh=force_refresh) if cache else None
+    try:
+        if not html:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                html = response.text
+            if cache:
+                cache.set(
+                    "vendor_sources",
+                    cache_key,
+                    html,
+                    source="microsoft-learn",
+                    savings={"api_calls": 1, "tokens": 0},
+                )
+    except Exception as exc:
+        logger.warning("Authoritative Exchange 2019 lookup failed: %s", exc)
+        return None
+
+    text = _html_to_text(html)
+    section_match = re.search(
+        r"Exchange Server 2019(?P<section>.*?)(?:Exchange Server 2016|Exchange Server 2013|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    section = section_match.group("section") if section_match else text
+    rows: list[tuple[str, str]] = []
+    for match in re.finditer(
+        r"Exchange Server 2019\s+(CU\d+)[^\n]*?\b\d{1,2}\.\d{1,2}\.\d+\.\d+\b\s+"
+        r"(?P<long>\d{2}\.\d{2}\.\d{4}\.\d{3})",
+        section,
+        flags=re.IGNORECASE,
+    ):
+        rows.append((match.group("long"), match.group(1).upper()))
+
+    if not rows:
+        for match in re.finditer(
+            r"Exchange Server 2019\s+(CU\d+)[^\n]*?(?P<short>\d{1,2}\.\d{1,2}\.\d+\.\d+)",
+            section,
+            flags=re.IGNORECASE,
+        ):
+            rows.append((_normalize_exchange_version(match.group("short")), match.group(1).upper()))
+
+    if not rows:
+        return None
+
+    build, cu = max(rows, key=lambda item: _version_tuple(item[0]))
+    logger.info("Authoritative Exchange 2019 lookup: build=%s cu=%s", build, cu)
+    return {"Build Version": build, "Cumulative Update (CU)": cu}
+
+
+def _html_to_text(html: str) -> str:
+    text = re.sub(r"<script\b.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    return re.sub(r"[ \t\r\f\v]+", " ", text)
+
+
+def _normalize_exchange_version(version: str) -> str:
+    parts = version.split(".")
+    if len(parts) != 4:
+        return version
+    return f"{int(parts[0]):02d}.{int(parts[1]):02d}.{int(parts[2]):04d}.{int(parts[3]):03d}"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
