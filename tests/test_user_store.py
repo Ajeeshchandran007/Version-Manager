@@ -5,6 +5,7 @@ from pathlib import Path
 from tests.conftest_path import PROJECT_ROOT  # noqa: F401
 from App.user_store import (
     authenticate_user,
+    delete_user,
     list_user_audit,
     list_users,
     seed_users_from_config,
@@ -67,6 +68,28 @@ class UserStoreTests(unittest.TestCase):
             self.assertFalse(users[0]["active"])
             self.assertIsNone(authenticate_user("qa1", "pw1", db_path))
             self.assertGreaterEqual(len(list_user_audit(db_path)), 3)
+
+    def test_delete_user_removes_account_and_keeps_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "users.db"
+            upsert_user(
+                username="mistake",
+                password="pw1",
+                display_name="Mistake User",
+                role="QA Engineer",
+                team_scope=["SourceOne"],
+                active=True,
+                actor="admin",
+                db_path=db_path,
+            )
+
+            deleted = delete_user("mistake", "admin", db_path)
+
+            self.assertTrue(deleted)
+            self.assertEqual(list_users(db_path, include_inactive=True), [])
+            audit = list_user_audit(db_path)
+            self.assertEqual(audit[0]["action"], "delete_user")
+            self.assertEqual(audit[0]["target_username"], "mistake")
 
 
 if __name__ == "__main__":

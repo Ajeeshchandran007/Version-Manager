@@ -208,6 +208,31 @@ def set_user_active(username: str, active: bool, actor: str, db_path: Path = DEF
         con.commit()
 
 
+def delete_user(username: str, actor: str, db_path: Path = DEFAULT_USER_DB) -> bool:
+    init_user_db(db_path)
+    username = username.strip()
+    if not username:
+        raise ValueError("Username is required.")
+    now = _now()
+    with closing(sqlite3.connect(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        existing = con.execute("SELECT username, role, team_scope_json, active FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+        if not existing:
+            return False
+        details = {
+            "role": existing["role"],
+            "team_scope": normalize_team_scope(json.loads(existing["team_scope_json"] or "[]")),
+            "active": bool(existing["active"]),
+        }
+        con.execute("DELETE FROM users WHERE username=?", (existing["username"],))
+        con.execute(
+            "INSERT INTO user_audit (actor, action, target_username, details_json, ts) VALUES (?, ?, ?, ?, ?)",
+            (actor, "delete_user", existing["username"], json.dumps(details), now),
+        )
+        con.commit()
+    return True
+
+
 def list_user_audit(db_path: Path = DEFAULT_USER_DB, limit: int = 100) -> list[dict[str, Any]]:
     init_user_db(db_path)
     with closing(sqlite3.connect(db_path)) as con:
