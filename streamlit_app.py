@@ -121,7 +121,7 @@ BASE_PAGES = [
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
-ADMIN_PAGES = ["Audit Logs", "Settings"]
+ADMIN_PAGES = ["Audit Logs", "Admin User Management", "Settings"]
 
 RISK_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"]
 PRIMARY_CACHE_NAMESPACES = {"software_versions", "vulnerabilities", "nvd"}
@@ -2991,8 +2991,14 @@ def render_settings(config: dict[str, Any]) -> None:
     ]
     st.dataframe(style_operational_table(pd.DataFrame(status_rows)), use_container_width=True, hide_index=True)
 
+def render_admin_user_management() -> None:
+    if not can_manage_settings():
+        render_access_denied("Admin")
+        return
+
+    section_title("Admin User Management", "Create users, assign roles, control team scope, and audit account changes.")
     st.subheader("Access Control")
-    st.caption("Administrator manages settings and users. Release Engineer prepares assessments and reports. QA Engineer validates deployments without security/CVE views.")
+    st.caption("Release Engineer prepares assessments and reports. QA Engineer validates deployments. Admin manages users, teams, and settings.")
     user_rows = [
         {
             "User": user["username"],
@@ -3008,7 +3014,7 @@ def render_settings(config: dict[str, Any]) -> None:
     ]
     st.dataframe(style_operational_table(pd.DataFrame(user_rows)), use_container_width=True, hide_index=True)
 
-    st.subheader("Admin User Management")
+    st.subheader("Create or Update User")
     st.caption("Create users, assign roles, limit team scope, and deactivate access without editing config.json.")
     existing_users = list_users(DEFAULT_USER_DB, include_inactive=True)
     usernames = ["Create new user"] + [user["username"] for user in existing_users]
@@ -3142,6 +3148,8 @@ def main() -> None:
         render_reports(current_df, comparison_df, vuln_df)
     elif page == "Audit Logs":
         render_audit(metrics_df, cache_metrics)
+    elif page == "Admin User Management":
+        render_admin_user_management()
     elif page == "Settings":
         render_settings(config)
 
