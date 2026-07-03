@@ -3366,19 +3366,23 @@ def render_input_upload(embedded: bool = False) -> None:
 
     known_teams = list_teams()
     team_options = sorted(set(known_teams + ["Avamar", "DPS", "PackageTeam", "SourceOne"]))
-    with st.form("release_input_upload_form"):
-        top_cols = st.columns([1, 1, 1])
+    form_col, _ = st.columns([0.68, 0.32])
+    with form_col.form("release_input_upload_form"):
+        top_cols = st.columns([1.25, 0.75])
         with top_cols[0]:
-            team = st.selectbox(
-                "Team",
-                team_options,
-                index=team_options.index(active_team_name()) if active_team_name() in team_options else 0,
-            )
+            try:
+                team = st.selectbox(
+                    "Team / Product Stream",
+                    team_options,
+                    index=team_options.index(active_team_name()) if active_team_name() in team_options else 0,
+                    accept_new_options=True,
+                    placeholder="Select or type team",
+                )
+            except TypeError:
+                team = st.text_input("Team / Product Stream", value=active_team_name(), placeholder="Select existing or type new team")
         with top_cols[1]:
-            custom_team = st.text_input("New Team", placeholder="Optional")
-        with top_cols[2]:
-            release_line = st.text_input("Release", value=active_release_line(team), placeholder="7.2.11")
-        upload_cols = st.columns([2, 1])
+            release_line = st.text_input("Release", value=active_release_line(str(team)), placeholder="7.2.11")
+        upload_cols = st.columns([1.45, 0.55])
         with upload_cols[0]:
             uploaded_files = st.file_uploader(
                 "Files",
@@ -3391,7 +3395,7 @@ def render_input_upload(embedded: bool = False) -> None:
             submitted = st.form_submit_button("Save", type="primary", use_container_width=True)
 
     if submitted:
-        selected_team = (custom_team.strip() or team).strip()
+        selected_team = str(team or "").strip()
         files: dict[str, bytes] = {}
         for uploaded_file in uploaded_files or []:
             filename = uploaded_file.name
