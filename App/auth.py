@@ -13,6 +13,7 @@ import streamlit as st
 from App.user_store import (
     DEFAULT_USER_DB,
     authenticate_user,
+    get_user,
     list_users,
     seed_users_from_config,
 )
@@ -77,7 +78,19 @@ def _configured_users_from_config(config: dict[str, Any]) -> list[dict[str, Any]
 
 
 def current_user() -> dict[str, Any]:
-    return st.session_state.get("vm_user") or {}
+    user = st.session_state.get("vm_user") or {}
+    username = str(user.get("username") or "").strip()
+    if username and "permissions" not in user:
+        db_user = get_user(username, DEFAULT_USER_DB)
+        if db_user:
+            user = {
+                **user,
+                "permissions": db_user.get("permissions", []),
+                "team_scope": db_user.get("team_scope", user.get("team_scope", ["*"])),
+                "role": db_user.get("role", user.get("role")),
+            }
+            st.session_state["vm_user"] = user
+    return user
 
 
 def current_role() -> str:
@@ -158,6 +171,7 @@ def _decode_auth_token(token: str, config: dict[str, Any]) -> dict[str, Any] | N
                 "role": user["role"],
                 "display_name": user["display_name"] or user["username"],
                 "team_scope": user.get("team_scope", ["*"]),
+                "permissions": user.get("permissions", []),
             }
     return None
 
@@ -260,6 +274,7 @@ def require_login(
                         "role": user["role"],
                         "display_name": user["display_name"] or user["username"],
                         "team_scope": user.get("team_scope", ["*"]),
+                        "permissions": user.get("permissions", []),
                         "last_login_at": user.get("last_login_at"),
                     }
                     st.session_state["vm_user"] = authenticated_user
