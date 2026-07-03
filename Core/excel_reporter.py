@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from Utils.version_format import canonical_version
+
 
 EXCEL_COLUMNS = [
     "Software Name",
@@ -62,8 +64,8 @@ def _build_row(
     return {
         "Software Name": software,
         "Vendor": _infer_vendor(software),
-        "Current Version": _format_version(current),
-        "Latest Version": _format_version(latest),
+        "Current Version": _format_version(software, current),
+        "Latest Version": _format_version(software, latest),
         "Version Status": _version_status(comparison),
         "Risk Level (Low/Medium/High/Critical)": risk_level,
         "Highest CVE Severity": _normalize_severity(vulnerability.get("severity")),
@@ -73,8 +75,8 @@ def _build_row(
     }
 
 
-def _format_version(version_info: dict[str, Any]) -> str:
-    build = version_info.get("Build Version") or "Unknown"
+def _format_version(software: str, version_info: dict[str, Any]) -> str:
+    build = canonical_version(software, version_info.get("Build Version")) or "Unknown"
     cu = version_info.get("Cumulative Update (CU)")
     return f"{build} ({cu})" if cu else build
 

@@ -9,6 +9,7 @@ from Core.cache import CacheManager, attach_cache_metadata, make_cache_key
 from Core.openai_client import OpenAIClient
 from Utils.parse_version import parse_version_text
 from Utils.utils import config_mtime, logger, load_config
+from Utils.version_format import canonical_version
 
 SYSTEM_PROMPT = """You are an assistant that extracts software version info from search results.
 Find the absolute latest Build Version and Cumulative Update (CU).
@@ -113,6 +114,7 @@ class VersionFetcher:
 
         # 3. Parse and repair deterministic table relationships if needed.
         parsed = parse_version_text(raw)
+        parsed["Build Version"] = canonical_version(software_name, parsed.get("Build Version"))
         _fill_cu_from_search_text(parsed, search_text)
         return self.cache.set(
             "software_versions",

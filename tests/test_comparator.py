@@ -36,6 +36,15 @@ class ComparatorTests(unittest.TestCase):
         self.assertTrue(report["SQL Server 2019"]["needs_update"])
         self.assertTrue(is_actionable_update(report["SQL Server 2019"]))
 
+    def test_exchange_short_and_long_formats_compare_equal(self):
+        report = compare(
+            {"MS Exchange Server 2019": {"Build Version": "15.2.858.10", "Cumulative Update (CU)": None}},
+            {"MS Exchange Server 2019": {"Build Version": "15.02.0858.010", "Cumulative Update (CU)": None}},
+        )
+
+        self.assertTrue(report["MS Exchange Server 2019"]["build_match"])
+        self.assertFalse(report["MS Exchange Server 2019"]["needs_update"])
+
     def test_mixed_vendor_version_scheme_requires_source_review(self):
         gap = version_gap("15.02.0858.010", "1748.037")
         readiness, reason = blocker_reason(

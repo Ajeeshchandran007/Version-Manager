@@ -1,5 +1,6 @@
 # Core/comparator.py
 """Compares latest vs current versions and flags mismatches."""
+from Utils.version_format import canonical_version
 from Utils.utils import logger
 
 
@@ -21,8 +22,8 @@ def compare(
         l = latest.get(name, {})
         c = current.get(name, {})
 
-        l_build = l.get("Build Version")
-        c_build = c.get("Build Version")
+        l_build = canonical_version(name, l.get("Build Version")) or None
+        c_build = canonical_version(name, c.get("Build Version")) or None
         l_cu    = l.get("Cumulative Update (CU)")
         c_cu    = c.get("Cumulative Update (CU)")
 

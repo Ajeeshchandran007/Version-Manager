@@ -10,6 +10,7 @@ import asyncio
 import httpx
 import paramiko
 from Utils.utils import logger, load_config
+from Utils.version_format import canonical_version
 
 
 class ServerQuerier:
@@ -184,6 +185,7 @@ def _parse_version_from_output(software_name: str, output: str) -> dict:
         build = re.search(r"(\d+\.\d+[\.\d]*)", output)
         if build: result["Build Version"] = build.group(1)
 
+    result["Build Version"] = canonical_version(software_name, result.get("Build Version"))
     logger.info(f"Parsed from live server [{software_name}]: {result}")
     return result
 
@@ -198,4 +200,5 @@ def _parse_http_response(software_name: str, data: dict) -> dict:
         version = data.get("version", {})
         result["Build Version"] = version.get("number")
 
+    result["Build Version"] = canonical_version(software_name, result.get("Build Version"))
     return result

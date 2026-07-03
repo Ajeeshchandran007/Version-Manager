@@ -77,6 +77,7 @@ from Core.workspace_assessment import (
 )
 from Utils.software_loader import load_software, load_software_metadata
 from Utils.utils import load_config, logger
+from Utils.version_format import canonical_version
 from agent.memory import get_run_history as read_run_history
 from agent.memory import log_audit
 from agent.multi_agent import LangGraphVersionManager
@@ -1220,6 +1221,10 @@ def value(record: dict[str, Any], *keys: str, default: Any = "") -> Any:
     return default
 
 
+def display_version(software_name: str, record: dict[str, Any], *keys: str) -> str:
+    return canonical_version(software_name, value(record, *keys))
+
+
 def safe_int(raw: Any, default: int = 0) -> int:
     try:
         return int(float(str(raw).strip()))
@@ -1384,7 +1389,7 @@ def normalize_current(data: dict[str, Any]) -> pd.DataFrame:
             {
                 "Software Name": name,
                 "Vendor": vendor_for(name),
-                "Current Version": value(record, "Build Version", "version"),
+                "Current Version": display_version(name, record, "Build Version", "version"),
                 "Current CU": value(record, "Cumulative Update (CU)", "cu", default=""),
                 "Server Name": "Configured Server" if value(record, "source") == "live server" else "PDF Inventory",
                 "Environment": "Production",
@@ -1403,7 +1408,7 @@ def normalize_latest(data: dict[str, Any]) -> pd.DataFrame:
             {
                 "Software Name": name,
                 "Vendor": vendor_for(name),
-                "Latest Version": value(record, "Build Version", "version"),
+                "Latest Version": display_version(name, record, "Build Version", "version"),
                 "Latest CU": value(record, "Cumulative Update (CU)", "cu", default=""),
                 "Last Checked": format_ts(metadata.get("last_updated")),
                 "Source": metadata.get("source", value(record, "source", default="vendor_sources")),
@@ -1418,8 +1423,8 @@ def normalize_comparison(data: dict[str, Any], vulnerabilities: dict[str, Any]) 
     for name, record in data.items():
         current = record.get("current", {})
         latest = record.get("latest", {})
-        current_version = value(current, "Build Version", "version")
-        latest_version = value(latest, "Build Version", "version")
+        current_version = display_version(name, current, "Build Version", "version")
+        latest_version = display_version(name, latest, "Build Version", "version")
         current_cu = value(current, "Cumulative Update (CU)", "cu", default="")
         latest_cu = value(latest, "Cumulative Update (CU)", "cu", default="")
         gap = version_gap(str(current_version), str(latest_version), str(current_cu), str(latest_cu))
@@ -1449,8 +1454,8 @@ def normalize_vulnerabilities(data: dict[str, Any]) -> pd.DataFrame:
         rows.append(
             {
                 "Software Name": value(record, "software_name", default=name),
-                "Current Installed Version": value(record, "current_version", "version"),
-                "Latest Available Version": value(record, "latest_version", default=""),
+                "Current Installed Version": canonical_version(name, value(record, "current_version", "version")),
+                "Latest Available Version": canonical_version(name, value(record, "latest_version", default="")),
                 "Version Assessed": value(record, "version_assessed", default="current"),
                 "CVE Severity": value(record, "severity", default="UNKNOWN").upper(),
                 "Risk Level": value(record, "risk_level", default="UNKNOWN").upper(),
@@ -1477,12 +1482,13 @@ def vulnerability_source_label(source: str) -> str:
 def normalize_package_readiness(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
     for name, record in data.items():
+        software_name = value(record, "Software Name", default=name)
         rows.append(
             {
-                "Software Name": value(record, "Software Name", default=name),
+                "Software Name": software_name,
                 "Vendor": value(record, "Vendor", default=vendor_for(name)),
-                "Current Version": value(record, "Current Version"),
-                "Target Version": value(record, "Target Version"),
+                "Current Version": canonical_version(software_name, value(record, "Current Version")),
+                "Target Version": canonical_version(software_name, value(record, "Target Version")),
                 "Package Readiness": value(record, "Package Readiness", default="Not Assessed"),
                 "Upgrade Impact": value(record, "Upgrade Impact", default="Medium"),
                 "Installer Type": value(record, "Installer Type", default="Vendor Package"),
@@ -1514,9 +1520,9 @@ def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
         rows.append(
             {
                 "Software Name": value(record, "Software Name", default=name),
-                "Current Version": value(record, "Current Version"),
-                "Latest Version": value(record, "Target Version", "Package Version"),
-                "Package Version": value(record, "Package Version"),
+                "Current Version": canonical_version(name, value(record, "Current Version")),
+                "Latest Version": canonical_version(name, value(record, "Target Version", "Package Version")),
+                "Package Version": canonical_version(name, value(record, "Package Version")),
                 "Installation Status": value(record, "Installation Status", default="Not Tested"),
                 "Compatibility Status": value(record, "Compatibility Status", default="Review Required"),
                 "Test Result": value(record, "Test Result", default="NOT TESTED"),
@@ -1549,10 +1555,11 @@ def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
 def normalize_testcase_impact(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
     for item in data.get("test_case_plan", []) or []:
+        software_name = value(item, "Software Name")
         rows.append({
-            "Software Name": value(item, "Software Name"),
-            "Current Version": value(item, "Current Version"),
-            "Target Version": value(item, "Target Version"),
+            "Software Name": software_name,
+            "Current Version": canonical_version(software_name, value(item, "Current Version")),
+            "Target Version": canonical_version(software_name, value(item, "Target Version")),
             "Test Case Source": value(item, "Test Case Source", "Test Coverage", default="Not Found"),
             "Test Case ID": value(item, "Test Case ID"),
             "Test Case Name": value(item, "Test Case Name"),

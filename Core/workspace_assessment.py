@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from Core.notifier import is_actionable_update
+from Utils.version_format import canonical_version
 
 
 def value(record: dict[str, Any], *keys: str, default: Any = "") -> Any:
@@ -579,8 +580,8 @@ def build_package_readiness(
         latest_record = latest.get(name, {})
         current = record.get("current", {})
         target = record.get("latest", {})
-        current_version = value(current, "Build Version", "version")
-        latest_version = value(target, "Build Version", "version")
+        current_version = canonical_version(name, value(current, "Build Version", "version"))
+        latest_version = canonical_version(name, value(target, "Build Version", "version"))
         current_cu = value(current, "Cumulative Update (CU)", "cu", default="")
         latest_cu = value(target, "Cumulative Update (CU)", "cu", default="")
         gap = version_gap(str(current_version), str(latest_version), str(current_cu), str(latest_cu))
@@ -657,8 +658,8 @@ def build_qa_validation(
     for name, record in comparison.items():
         current = record.get("current", {})
         latest = record.get("latest", {})
-        current_version = value(current, "Build Version", "version")
-        latest_version = value(latest, "Build Version", "version")
+        current_version = canonical_version(name, value(current, "Build Version", "version"))
+        latest_version = canonical_version(name, value(latest, "Build Version", "version"))
         needs_update = is_actionable_update(record)
         ready = readiness.get(name, {})
         requirements = merge_vendor_requirements(

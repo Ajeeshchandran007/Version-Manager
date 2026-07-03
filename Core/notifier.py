@@ -12,6 +12,7 @@ from typing import Any
 
 from Core.policy import PolicyError, require_approval
 from Utils.utils import logger, load_config
+from Utils.version_format import canonical_version
 
 LAST_EMAIL_ERROR: str | None = None
 
@@ -98,8 +99,8 @@ def build_report(
             item = comparison[name]
             lines.append(
                 f"{name}: source={item.get('current_source', 'unknown')}, "
-                f"current={_format_version(item.get('current') or {})}, "
-                f"latest={_format_version(item.get('latest') or {})}"
+                f"current={_format_version(name, item.get('current') or {})}, "
+                f"latest={_format_version(name, item.get('latest') or {})}"
             )
 
     return "\n".join(lines)
@@ -320,9 +321,9 @@ def _priority_rows(comparison: dict[str, dict], vulnerabilities: dict[str, dict]
         update_priority = _business_risk(software, item, vulnerabilities)
         rows.append([
             _display_name(software),
-            _format_version(item.get("current") or {}),
-            _format_version(item.get("latest") or {}),
-            _version_gap(item),
+            _format_version(software, item.get("current") or {}),
+            _format_version(software, item.get("latest") or {}),
+            _version_gap(item, software),
             security_risk,
             update_priority,
         ])
@@ -497,17 +498,18 @@ def _section_header(title: str) -> str:
 
 
 
-def _format_version(version_info: dict[str, Any]) -> str:
-    build = version_info.get("Build Version") or "Unknown"
+def _format_version(software: str, version_info: dict[str, Any]) -> str:
+    build = canonical_version(software, version_info.get("Build Version")) or "Unknown"
     cu = version_info.get("Cumulative Update (CU)")
     return f"{build} ({cu})" if cu else build
 
 
-def _version_gap(item: dict[str, Any]) -> str:
+def _version_gap(item: dict[str, Any], software: str = "") -> str:
     current = item.get("current") or {}
     latest = item.get("latest") or {}
-    current_build = str(current.get("Build Version") or "").strip()
-    latest_build = str(latest.get("Build Version") or "").strip()
+    software = software or str(item.get("software_name") or item.get("Software Name") or "")
+    current_build = canonical_version(software, current.get("Build Version"))
+    latest_build = canonical_version(software, latest.get("Build Version"))
     current_cu = current.get("Cumulative Update (CU)")
     latest_cu = latest.get("Cumulative Update (CU)")
     builds_match = bool(current_build and latest_build and current_build.lower() == latest_build.lower())
@@ -551,7 +553,7 @@ def _business_risk(software: str, item: dict[str, Any], vulnerabilities: dict[st
     if security_risk in {"Critical", "High"}:
         return security_risk
 
-    gap = _version_gap(item).lower()
+    gap = _version_gap(item, software).lower()
     name = software.lower()
     enterprise_impact = any(token in name for token in ["exchange", "sql server", "openssl", "elastic"])
     if "cu(s) behind" in gap or "major" in gap or enterprise_impact:
