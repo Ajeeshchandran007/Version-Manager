@@ -123,7 +123,6 @@ BASE_PAGES = [
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
-INPUT_PAGES = ["Input Upload"]
 ADMIN_PAGES = ["Audit Logs", "Admin User Management", "Settings"]
 
 RISK_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"]
@@ -1894,10 +1893,6 @@ def render_access_denied(required: str) -> None:
 
 def pages_for_role(role: str) -> list[str]:
     pages = [*BASE_PAGES]
-    if role in ACTION_ROLES:
-        insert_at = pages.index("Latest Versions") if "Latest Versions" in pages else len(pages)
-        for page in reversed(INPUT_PAGES):
-            pages.insert(insert_at, page)
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         insert_at = pages.index("Compatibility Check") if "Compatibility Check" in pages else len(pages)
         for page in reversed(RELEASE_PAGES):
@@ -2269,6 +2264,8 @@ def page_context() -> SimpleNamespace:
 
 
 def render_operations(config: dict[str, Any]) -> None:
+    with st.expander("Release Input Upload", expanded=False):
+        render_input_upload(embedded=True)
     app_pages.render_operations(config, page_context())
 
 
@@ -3354,12 +3351,15 @@ def save_uploaded_release_inputs(team_name: str, release_line: str, files: dict[
     return True, f"Input files saved for {team} / {release}.", saved_paths
 
 
-def render_input_upload() -> None:
+def render_input_upload(embedded: bool = False) -> None:
     if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
         render_access_denied("Administrator, Release Engineer, or QA Engineer")
         return
 
-    section_title("Input Upload", "Upload release input files for a team and product version.")
+    if not embedded:
+        section_title("Input Upload", "Upload release input files for a team and product version.")
+    else:
+        st.markdown("**Upload release input files for a team and product version.**")
     upload_status = st.session_state.pop("input_upload_status", None)
     if upload_status:
         st.success(upload_status)
@@ -3448,8 +3448,6 @@ def main() -> None:
         render_operations(config)
     elif page == "Software Inventory":
         render_inventory(current_df)
-    elif page == "Input Upload":
-        render_input_upload()
     elif page == "Latest Versions":
         render_latest(latest_df)
     elif page == "Version Comparison":
