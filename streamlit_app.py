@@ -3367,21 +3367,28 @@ def render_input_upload(embedded: bool = False) -> None:
     known_teams = list_teams()
     team_options = sorted(set(known_teams + ["Avamar", "DPS", "PackageTeam", "SourceOne"]))
     with st.form("release_input_upload_form"):
-        team = st.selectbox(
-            "Team / Product Stream",
-            team_options,
-            index=team_options.index(active_team_name()) if active_team_name() in team_options else 0,
-        )
-        custom_team = st.text_input("New Team Name", placeholder="Use only if the team is not listed")
-        release_line = st.text_input("Product Version / Release Line", value=active_release_line(team), placeholder="Example: 7.2.11")
-        uploaded_files = st.file_uploader(
-            "Input Files",
-            type=["yml", "yaml", "pdf", "xlsx"],
-            accept_multiple_files=True,
-            help="software.yml is mandatory. Optional files: sample_version.pdf and testcaseRepository.xlsx.",
-        )
-        st.caption("Required: software.yml. Optional: sample_version.pdf, testcaseRepository.xlsx.")
-        submitted = st.form_submit_button("Save Input Files", type="primary", use_container_width=True)
+        top_cols = st.columns([1, 1, 1])
+        with top_cols[0]:
+            team = st.selectbox(
+                "Team",
+                team_options,
+                index=team_options.index(active_team_name()) if active_team_name() in team_options else 0,
+            )
+        with top_cols[1]:
+            custom_team = st.text_input("New Team", placeholder="Optional")
+        with top_cols[2]:
+            release_line = st.text_input("Release", value=active_release_line(team), placeholder="7.2.11")
+        upload_cols = st.columns([2, 1])
+        with upload_cols[0]:
+            uploaded_files = st.file_uploader(
+                "Files",
+                type=["yml", "yaml", "pdf", "xlsx"],
+                accept_multiple_files=True,
+                help="software.yml is mandatory. Optional files: sample_version.pdf and testcaseRepository.xlsx.",
+            )
+        with upload_cols[1]:
+            st.caption("Required: software.yml")
+            submitted = st.form_submit_button("Save", type="primary", use_container_width=True)
 
     if submitted:
         selected_team = (custom_team.strip() or team).strip()
