@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,7 @@ from App.workspace import (
     team_input_software_path,
 )
 from App.workflow_locks import WorkflowAlreadyRunning, workflow_lock
+from App.workflow_runs import list_workflow_runs, record_workflow_run
 from App.user_store import DEFAULT_USER_DB, PERMISSION_QA_SIGNOFF, ROLES, delete_user, list_user_audit, list_users, set_user_active, upsert_user
 from Core.compatibility_fetcher import CompatibilityRequirementFetcher
 from Core.comparator import compare
@@ -800,6 +802,42 @@ def active_workflow_context(team: str | None = None, release: str | None = None)
     }
 
 
+def record_streamlit_workflow_run(
+    *,
+    run_id: str,
+    team: str,
+    release: str,
+    workflow_scope: str,
+    category: str,
+    status: str,
+    started_at: datetime,
+    started_clock: float,
+    summary: dict[str, Any],
+    error_message: str = "",
+) -> None:
+    user = current_user()
+    record_workflow_run(
+        app_state_db_path(team, release),
+        run_id=run_id,
+        team=team,
+        release_line=release,
+        workflow_scope=workflow_scope,
+        category=category,
+        status=status,
+        triggered_by=str(user.get("username") or ""),
+        triggered_by_role=current_role(),
+        started_at=started_at.isoformat(timespec="seconds"),
+        ended_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        duration_seconds=round(time.perf_counter() - started_clock, 3),
+        total=int(summary.get("total") or 0),
+        needs_update_count=len(summary.get("needs_update") or []),
+        unknown_count=len(summary.get("unknown") or []),
+        email_sent=bool(summary.get("email_sent")),
+        error_message=error_message or str(summary.get("error") or ""),
+        summary=summary,
+    )
+
+
 def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
     config = state["config"]
 
@@ -986,6 +1024,9 @@ async def trigger_full_pipeline(
 ) -> dict[str, Any]:
     workflow_team = team or active_team_name()
     workflow_release = release or active_release_line(workflow_team)
+    started_at = datetime.now().astimezone()
+    started_clock = time.perf_counter()
+    run_id = f"streamlit-full-{workflow_team}-{workflow_release}-{int(started_clock * 1000)}"
     try:
         with workflow_lock(
             app_state_db_path(workflow_team, workflow_release),
@@ -1003,13 +1044,28 @@ async def trigger_full_pipeline(
             )
     except WorkflowAlreadyRunning as exc:
         return {"error": str(exc), "operation": "full_pipeline"}
+    except Exception as exc:
+        summary = {"error": str(exc), "operation": "full_pipeline"}
+        record_streamlit_workflow_run(
+            run_id=run_id,
+            team=workflow_team,
+            release=workflow_release,
+            workflow_scope="full",
+            category=category,
+            status="failed",
+            started_at=started_at,
+            started_clock=started_clock,
+            summary=summary,
+            error_message=str(exc),
+        )
+        return summary
     comparison = final_state.get("comparison_results", {})
     vulnerabilities = final_state.get("vulnerability_results", {})
     report_package = final_state.get("report_package", {})
     notification = report_package.get("notification", {})
     excel = report_package.get("excel", {})
     updates = [name for name, result in comparison.items() if is_actionable_update(result)]
-    return {
+    result = {
         "operation": "full_pipeline",
         "workflow": "LangGraph Supervisor",
         **active_workflow_context(workflow_team, workflow_release),
@@ -1033,6 +1089,18 @@ async def trigger_full_pipeline(
         "email_sent": bool(notification.get("sent")),
         "email_error": notification.get("error"),
     }
+    record_streamlit_workflow_run(
+        run_id=run_id,
+        team=workflow_team,
+        release=workflow_release,
+        workflow_scope="full",
+        category=category,
+        status="completed",
+        started_at=started_at,
+        started_clock=started_clock,
+        summary=result,
+    )
+    return result
 
 
 async def trigger_scoped_pipeline(
@@ -1044,6 +1112,8 @@ async def trigger_scoped_pipeline(
 ) -> dict[str, Any]:
     workflow_team = team or active_team_name()
     workflow_release = release or active_release_line(workflow_team)
+    started_at = datetime.now().astimezone()
+    started_clock = time.perf_counter()
     try:
         with workflow_lock(
             app_state_db_path(workflow_team, workflow_release),
@@ -1053,9 +1123,26 @@ async def trigger_scoped_pipeline(
             owner=workflow_owner(),
         ):
             state = runtime_state(workflow_team, workflow_release)
+            state["triggered_by"] = workflow_owner()
+            state["triggered_by_role"] = current_role()
             summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope=workflow_scope)
     except WorkflowAlreadyRunning as exc:
         return {"error": str(exc), "operation": f"{workflow_scope}_workflow"}
+    except Exception as exc:
+        summary = {"error": str(exc), "operation": f"{workflow_scope}_workflow"}
+        record_streamlit_workflow_run(
+            run_id=f"streamlit-{workflow_scope}-{workflow_team}-{workflow_release}-{int(started_clock * 1000)}",
+            team=workflow_team,
+            release=workflow_release,
+            workflow_scope=workflow_scope,
+            category=category,
+            status="failed",
+            started_at=started_at,
+            started_clock=started_clock,
+            summary=summary,
+            error_message=str(exc),
+        )
+        return summary
     if "error" in summary:
         return {"error": summary["error"], "operation": f"{workflow_scope}_workflow"}
     return {
@@ -2852,6 +2939,43 @@ def build_performance_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
 
 def render_workflow(metrics_df: pd.DataFrame) -> None:
     section_title("Workflow Monitor", "Pipeline execution stages and processing duration.")
+    st.subheader("Workflow Run History")
+    try:
+        run_rows = list_workflow_runs(
+            app_state_db_path(active_team_name(), active_release_line()),
+            team=active_team_name(),
+            release_line=active_release_line(),
+            limit=25,
+        )
+    except Exception as exc:
+        run_rows = []
+        st.warning(f"Workflow run history is not available: {exc}")
+    if run_rows:
+        run_df = pd.DataFrame(
+            [
+                {
+                    "Run ID": row.get("run_id", ""),
+                    "Team": row.get("team", ""),
+                    "Release": row.get("release_line", ""),
+                    "Scope": str(row.get("workflow_scope", "")).title(),
+                    "Status": str(row.get("status", "")).title(),
+                    "Triggered By": row.get("triggered_by", ""),
+                    "Role": row.get("triggered_by_role", ""),
+                    "Started": format_ts(str(row.get("started_at", ""))),
+                    "Duration Seconds": row.get("duration_seconds", ""),
+                    "Total": row.get("total", 0),
+                    "Needs Update": row.get("needs_update_count", 0),
+                    "Unknown": row.get("unknown_count", 0),
+                    "Email Sent": "Yes" if row.get("email_sent") else "No",
+                    "Error": row.get("error_message", ""),
+                }
+                for row in run_rows
+            ]
+        )
+        st.dataframe(style_operational_table(run_df), use_container_width=True, hide_index=True)
+    else:
+        st.info("No persisted workflow runs found for the selected team and release.")
+
     nodes = [
         ("Supervisor Agent", "Routes request"),
         ("Discovery Agent", "Inventory collection"),

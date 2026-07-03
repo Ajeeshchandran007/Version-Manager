@@ -18,8 +18,10 @@ No main.py / custom client needed.
 
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -47,6 +49,7 @@ from Core.workspace_assessment import (
 )
 from Utils.software_loader import load_software, load_software_metadata
 from Utils.utils import config_mtime, logger, load_config
+from App.workflow_runs import record_workflow_run
 from agent.memory import get_run_history as read_run_history
 from agent.memory import init_db, log_audit
 
@@ -200,6 +203,10 @@ def _active_aux_output_path(config: dict, filename: str) -> str:
     if workspace_dir:
         return os.path.join(workspace_dir, filename)
     return _resolve_path(os.path.join("output", filename))
+
+
+def _workflow_run_db_path(config: dict) -> Path:
+    return Path(_active_aux_output_path(config, "app_state.db"))
 
 
 def _assess_vulnerabilities(
@@ -381,6 +388,8 @@ async def _run_pipeline(
     reader  = state["pdf_reader"]
     querier = state["server_querier"]
     trace_id = new_trace_id("pipeline")
+    started_at = datetime.now().astimezone()
+    started_clock = time.perf_counter()
     emit_event("pipeline.started", trace_id, category=category)
 
     yml_path = config["input_files"]["software_yml"]
@@ -388,7 +397,21 @@ async def _run_pipeline(
     software_metadata = load_software_metadata(yml_path, category)
 
     if not software_list:
-        return {"error": f"No software found for category '{category}'"}
+        error_summary = {"error": f"No software found for category '{category}'"}
+        _record_backend_workflow_run(
+            config,
+            run_id=trace_id,
+            category=category,
+            workflow_scope=workflow_scope,
+            status="failed",
+            started_at=started_at,
+            started_clock=started_clock,
+            error_message=error_summary["error"],
+            summary=error_summary,
+            triggered_by=str(state.get("triggered_by") or ""),
+            triggered_by_role=str(state.get("triggered_by_role") or ""),
+        )
+        return error_summary
 
     logger.info(f"Pipeline started - {len(software_list)} items, category='{category}'")
 
@@ -531,7 +554,60 @@ async def _run_pipeline(
     }
     logger.info(f"Pipeline complete: {summary}")
     emit_event("pipeline.completed", **summary)
+    _record_backend_workflow_run(
+        config,
+        run_id=trace_id,
+        category=category,
+        workflow_scope=workflow_scope,
+        status="completed",
+        started_at=started_at,
+        started_clock=started_clock,
+        summary=summary,
+        triggered_by=str(state.get("triggered_by") or ""),
+        triggered_by_role=str(state.get("triggered_by_role") or ""),
+    )
     return summary
+
+
+def _record_backend_workflow_run(
+    config: dict,
+    *,
+    run_id: str,
+    category: str,
+    workflow_scope: str,
+    status: str,
+    started_at: datetime,
+    started_clock: float,
+    summary: dict[str, Any],
+    error_message: str = "",
+    triggered_by: str = "",
+    triggered_by_role: str = "",
+) -> None:
+    context = _active_release_context(config)
+    ended_at = datetime.now().astimezone()
+    try:
+        record_workflow_run(
+            _workflow_run_db_path(config),
+            run_id=run_id,
+            team=context.get("team") or "Default",
+            release_line=context.get("release") or "Unscoped",
+            workflow_scope=workflow_scope,
+            category=category,
+            status=status,
+            triggered_by=triggered_by,
+            triggered_by_role=triggered_by_role,
+            started_at=started_at.isoformat(timespec="seconds"),
+            ended_at=ended_at.isoformat(timespec="seconds"),
+            duration_seconds=round(time.perf_counter() - started_clock, 3),
+            total=int(summary.get("total") or 0),
+            needs_update_count=len(summary.get("needs_update") or []),
+            unknown_count=len(summary.get("unknown") or []),
+            email_sent=bool(summary.get("email_sent")),
+            error_message=error_message or str(summary.get("error") or ""),
+            summary=summary,
+        )
+    except Exception as exc:
+        logger.warning("Workflow run history could not be recorded: %s", exc)
 
 
 async def _scheduled_pipeline(state: dict, category: str):
