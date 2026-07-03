@@ -60,7 +60,6 @@ from App.workspace import (
     create_team_snapshot,
     list_teams,
     project_path,
-    save_release_input_files,
     scoped_config_for_context,
     team_workspace_output_dir,
     team_input_software_path,
@@ -3330,6 +3329,31 @@ def render_admin_user_management() -> None:
             st.info("No user audit events recorded yet.")
 
 
+def save_uploaded_release_inputs(team_name: str, release_line: str, files: dict[str, bytes]) -> tuple[bool, str, list[Path]]:
+    team = re.sub(r"[^A-Za-z0-9._-]+", "-", str(team_name or "").strip().replace("\\", "-").replace("/", "-")).strip(".-_")
+    release = re.sub(r"[^A-Za-z0-9._-]+", "-", str(release_line or "").strip().replace("\\", "-").replace("/", "-")).strip(".-_")
+    if not team or team == DEFAULT_TEAM_LABEL:
+        return False, "Enter a team name such as SourceOne, DPS, Avamar, or PackageTeam.", []
+    if not release:
+        return False, "Enter a concrete product version or release line such as 7.2.11.", []
+    if "software.yml" not in files:
+        return False, "software.yml is required before a release can be used by workflows.", []
+
+    target_root = BASE_DIR / "Input" / "teams" / team / "releases" / release
+    target_root.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for filename, content in files.items():
+        if filename not in {"software.yml", "sample_version.pdf", "testcaseRepository.xlsx"}:
+            continue
+        target = target_root / filename
+        target.write_bytes(content)
+        saved_paths.append(target)
+
+    st.session_state["active_team"] = team
+    st.session_state["active_release_line"] = release
+    return True, f"Input files saved for {team} / {release}.", saved_paths
+
+
 def render_input_upload() -> None:
     if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
         render_access_denied("Administrator, Release Engineer, or QA Engineer")
@@ -3369,7 +3393,7 @@ def render_input_upload() -> None:
         if testcase_repo is not None:
             files["testcaseRepository.xlsx"] = testcase_repo.getvalue()
 
-        success, message, saved_paths = save_release_input_files(selected_team, release_line, files)
+        success, message, saved_paths = save_uploaded_release_inputs(selected_team, release_line, files)
         if success:
             saved_list = ", ".join(path.relative_to(BASE_DIR).as_posix() for path in saved_paths)
             st.session_state["input_upload_status"] = f"{message} Saved files: {saved_list}."
