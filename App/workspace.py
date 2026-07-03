@@ -251,3 +251,28 @@ def create_release_line_snapshot(team_name: str, release_line: str, base_release
 
     st.session_state["active_release_line"] = release
     return True, f"Product version {release} created for {team}."
+
+
+def save_release_input_files(team_name: str, release_line: str, files: dict[str, bytes]) -> tuple[bool, str, list[Path]]:
+    team = team_name_to_path_name(team_name)
+    release = safe_path_name(release_line)
+    if not team or team == DEFAULT_TEAM_LABEL:
+        return False, "Enter a team name such as SourceOne, DPS, Avamar, or PackageTeam.", []
+    if not release:
+        return False, "Enter a concrete product version or release line such as 7.2.11.", []
+    if "software.yml" not in files:
+        return False, "software.yml is required before a release can be used by workflows.", []
+
+    target_root = team_input_release_path(team, release)
+    target_root.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for filename, content in files.items():
+        if filename not in {"software.yml", "sample_version.pdf", "testcaseRepository.xlsx"}:
+            continue
+        target = target_root / filename
+        target.write_bytes(content)
+        saved_paths.append(target)
+
+    st.session_state["active_team"] = team
+    st.session_state["active_release_line"] = release
+    return True, f"Input files saved for {team} / {release}.", saved_paths

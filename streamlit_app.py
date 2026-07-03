@@ -60,6 +60,7 @@ from App.workspace import (
     create_team_snapshot,
     list_teams,
     project_path,
+    save_release_input_files,
     scoped_config_for_context,
     team_workspace_output_dir,
     team_input_software_path,
@@ -123,6 +124,7 @@ BASE_PAGES = [
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
+INPUT_PAGES = ["Input Upload"]
 ADMIN_PAGES = ["Audit Logs", "Admin User Management", "Settings"]
 
 RISK_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"]
@@ -1893,6 +1895,10 @@ def render_access_denied(required: str) -> None:
 
 def pages_for_role(role: str) -> list[str]:
     pages = [*BASE_PAGES]
+    if role in ACTION_ROLES:
+        insert_at = pages.index("Latest Versions") if "Latest Versions" in pages else len(pages)
+        for page in reversed(INPUT_PAGES):
+            pages.insert(insert_at, page)
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         insert_at = pages.index("Compatibility Check") if "Compatibility Check" in pages else len(pages)
         for page in reversed(RELEASE_PAGES):
@@ -3324,6 +3330,54 @@ def render_admin_user_management() -> None:
             st.info("No user audit events recorded yet.")
 
 
+def render_input_upload() -> None:
+    if current_role() not in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER}:
+        render_access_denied("Administrator, Release Engineer, or QA Engineer")
+        return
+
+    section_title("Input Upload", "Upload release input files for a team and product version.")
+    upload_status = st.session_state.pop("input_upload_status", None)
+    if upload_status:
+        st.success(upload_status)
+    st.info(
+        "Files are saved to the app input folder for the selected team/release. "
+        "On Streamlit Cloud this storage can reset after redeploys; use SharePoint or another durable store for production retention."
+    )
+
+    known_teams = list_teams()
+    team_options = sorted(set(known_teams + ["Avamar", "DPS", "PackageTeam", "SourceOne"]))
+    with st.form("release_input_upload_form"):
+        team = st.selectbox(
+            "Team / Product Stream",
+            team_options,
+            index=team_options.index(active_team_name()) if active_team_name() in team_options else 0,
+        )
+        custom_team = st.text_input("New Team Name", placeholder="Use only if the team is not listed")
+        release_line = st.text_input("Product Version / Release Line", value=active_release_line(team), placeholder="Example: 7.2.11")
+        software_yml = st.file_uploader("software.yml", type=["yml", "yaml"])
+        sample_pdf = st.file_uploader("sample_version.pdf", type=["pdf"])
+        testcase_repo = st.file_uploader("testcaseRepository.xlsx", type=["xlsx"])
+        submitted = st.form_submit_button("Save Input Files", type="primary", use_container_width=True)
+
+    if submitted:
+        selected_team = (custom_team.strip() or team).strip()
+        files: dict[str, bytes] = {}
+        if software_yml is not None:
+            files["software.yml"] = software_yml.getvalue()
+        if sample_pdf is not None:
+            files["sample_version.pdf"] = sample_pdf.getvalue()
+        if testcase_repo is not None:
+            files["testcaseRepository.xlsx"] = testcase_repo.getvalue()
+
+        success, message, saved_paths = save_release_input_files(selected_team, release_line, files)
+        if success:
+            saved_list = ", ".join(path.relative_to(BASE_DIR).as_posix() for path in saved_paths)
+            st.session_state["input_upload_status"] = f"{message} Saved files: {saved_list}."
+            st.rerun()
+        else:
+            st.error(message)
+
+
 def main() -> None:
     inject_css()
     base_config = load_config()
@@ -3370,6 +3424,8 @@ def main() -> None:
         render_operations(config)
     elif page == "Software Inventory":
         render_inventory(current_df)
+    elif page == "Input Upload":
+        render_input_upload()
     elif page == "Latest Versions":
         render_latest(latest_df)
     elif page == "Version Comparison":
