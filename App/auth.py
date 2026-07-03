@@ -10,6 +10,13 @@ from typing import Any, Callable
 import pandas as pd
 import streamlit as st
 
+from App.user_store import (
+    DEFAULT_USER_DB,
+    authenticate_user,
+    list_users,
+    seed_users_from_config,
+)
+
 ROLE_ADMIN = "Admin"
 ROLE_RELEASE_ENGINEER = "Release Engineer"
 ROLE_QA_ENGINEER = "QA Engineer"
@@ -42,6 +49,15 @@ def normalize_role(role: Any) -> str:
 
 
 def configured_users(config: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_users = _configured_users_from_config(config)
+    seed_users_from_config(raw_users, DEFAULT_USER_DB)
+    db_users = list_users(DEFAULT_USER_DB, include_inactive=False)
+    if db_users:
+        return db_users
+    return raw_users
+
+
+def _configured_users_from_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     users = config.get("users")
     if isinstance(users, list) and users:
         return [
@@ -57,14 +73,6 @@ def configured_users(config: dict[str, Any]) -> list[dict[str, Any]]:
         ]
     return [
         {"username": "admin", "password": "admin", "role": ROLE_ADMIN, "display_name": "Administrator", "team_scope": ["*"]},
-        {"username": "sourceone_release", "password": "sourceone_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "SourceOne Release", "team_scope": ["SourceOne"]},
-        {"username": "sourceone_qa", "password": "sourceone_qa", "role": ROLE_QA_ENGINEER, "display_name": "SourceOne QA", "team_scope": ["SourceOne"]},
-        {"username": "dps_release", "password": "dps_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "DPS Release", "team_scope": ["DPS"]},
-        {"username": "dps_qa", "password": "dps_qa", "role": ROLE_QA_ENGINEER, "display_name": "DPS QA", "team_scope": ["DPS"]},
-        {"username": "avamar_release", "password": "avamar_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "Avamar Release", "team_scope": ["Avamar"]},
-        {"username": "avamar_qa", "password": "avamar_qa", "role": ROLE_QA_ENGINEER, "display_name": "Avamar QA", "team_scope": ["Avamar"]},
-        {"username": "package_release", "password": "package_release", "role": ROLE_RELEASE_ENGINEER, "display_name": "Package Team Release", "team_scope": ["PackageTeam"]},
-        {"username": "package_qa", "password": "package_qa", "role": ROLE_QA_ENGINEER, "display_name": "Package Team QA", "team_scope": ["PackageTeam"]},
     ]
 
 
@@ -99,7 +107,6 @@ def _auth_secret(config: dict[str, Any]) -> bytes:
             "users": [
                 {
                     "username": user["username"],
-                    "password": user["password"],
                     "role": user["role"],
                     "team_scope": user.get("team_scope", ["*"]),
                 }
@@ -240,26 +247,28 @@ def require_login(
                         "Username": user["username"],
                         "Role": user["role"],
                         "Team Scope": "All Teams" if "*" in user.get("team_scope", ["*"]) else ", ".join(user.get("team_scope", [])),
+                        "Active": "Yes" if user.get("active", True) else "No",
                     }
                     for user in configured_users(config)
                 ]
                 st.dataframe(pd.DataFrame(role_rows), use_container_width=True, hide_index=True)
             if submitted:
-                for user in configured_users(config):
-                    if username.strip().lower() == user["username"].lower() and password.strip() == user["password"]:
-                        authenticated_user = {
-                            "username": user["username"],
-                            "role": user["role"],
-                            "display_name": user["display_name"] or user["username"],
-                            "team_scope": user.get("team_scope", ["*"]),
-                        }
-                        st.session_state["vm_user"] = authenticated_user
-                        scoped_teams = allowed_teams_resolver(authenticated_user)
-                        if len(scoped_teams) == 1:
-                            st.session_state["active_team"] = scoped_teams[0]
-                        _persist_user_session(authenticated_user, config)
-                        login_placeholder.empty()
-                        return True
+                user = authenticate_user(username.strip(), password.strip(), DEFAULT_USER_DB)
+                if user:
+                    authenticated_user = {
+                        "username": user["username"],
+                        "role": user["role"],
+                        "display_name": user["display_name"] or user["username"],
+                        "team_scope": user.get("team_scope", ["*"]),
+                        "last_login_at": user.get("last_login_at"),
+                    }
+                    st.session_state["vm_user"] = authenticated_user
+                    scoped_teams = allowed_teams_resolver(authenticated_user)
+                    if len(scoped_teams) == 1:
+                        st.session_state["active_team"] = scoped_teams[0]
+                    _persist_user_session(authenticated_user, config)
+                    login_placeholder.empty()
+                    return True
                 st.error("Invalid username or password.")
 
     return False

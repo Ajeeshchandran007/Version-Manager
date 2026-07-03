@@ -62,6 +62,7 @@ from App.workspace import (
     team_input_software_path,
 )
 from App.workflow_locks import WorkflowAlreadyRunning, workflow_lock
+from App.user_store import DEFAULT_USER_DB, ROLES, list_user_audit, list_users, set_user_active, upsert_user
 from Core.compatibility_fetcher import CompatibilityRequirementFetcher
 from Core.comparator import compare
 from Core.excel_reporter import generate_excel_report
@@ -2998,12 +2999,84 @@ def render_settings(config: dict[str, Any]) -> None:
             "Display Name": user.get("display_name", user["username"]),
             "Role": user["role"],
             "Team Scope": ", ".join(user.get("team_scope", ["*"])),
+            "Active": "Yes" if user.get("active", True) else "No",
+            "Last Login": user.get("last_login_at") or "Never",
             "Can Run Scans": "Yes" if user["role"] in ACTION_ROLES else "No",
             "Can Manage Settings": "Yes" if user["role"] in ADMIN_ROLES else "No",
         }
-        for user in configured_users(config)
+        for user in list_users(DEFAULT_USER_DB, include_inactive=True)
     ]
     st.dataframe(style_operational_table(pd.DataFrame(user_rows)), use_container_width=True, hide_index=True)
+
+    st.subheader("Admin User Management")
+    st.caption("Create users, assign roles, limit team scope, and deactivate access without editing config.json.")
+    existing_users = list_users(DEFAULT_USER_DB, include_inactive=True)
+    usernames = ["Create new user"] + [user["username"] for user in existing_users]
+    selected_username = st.selectbox("User Action", usernames)
+    selected_user = next((user for user in existing_users if user["username"] == selected_username), None)
+
+    with st.form("admin_user_management_form"):
+        username = st.text_input(
+            "Username",
+            value="" if selected_user is None else selected_user["username"],
+            disabled=selected_user is not None,
+        )
+        display_name = st.text_input(
+            "Display Name",
+            value="" if selected_user is None else selected_user.get("display_name", ""),
+        )
+        role = st.selectbox(
+            "Role",
+            sorted(ROLES),
+            index=sorted(ROLES).index(selected_user["role"]) if selected_user else 0,
+        )
+        team_scope = st.text_input(
+            "Team Scope",
+            value="*" if selected_user is None else ", ".join(selected_user.get("team_scope", ["*"])),
+            help="Use * for all teams, or comma-separated team names such as SourceOne, DPS.",
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            help="Required for new users. Leave blank when editing to keep the existing password.",
+        )
+        active = st.checkbox("Active", value=True if selected_user is None else bool(selected_user.get("active", True)))
+        submitted = st.form_submit_button("Save User", type="primary", use_container_width=True)
+
+    if submitted:
+        try:
+            saved = upsert_user(
+                username=username if selected_user is None else selected_user["username"],
+                password=password or None,
+                display_name=display_name.strip() or username,
+                role=role,
+                team_scope=team_scope,
+                active=active,
+                actor=current_user().get("username", "admin"),
+                db_path=DEFAULT_USER_DB,
+            )
+            st.success(f"User {saved['username']} saved.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"User was not saved: {exc}")
+
+    if selected_user and selected_user["username"] != current_user().get("username"):
+        cols = st.columns(2)
+        if cols[0].button("Deactivate Selected User", disabled=not selected_user.get("active", True), use_container_width=True):
+            set_user_active(selected_user["username"], False, current_user().get("username", "admin"), DEFAULT_USER_DB)
+            st.success(f"User {selected_user['username']} deactivated.")
+            st.rerun()
+        if cols[1].button("Reactivate Selected User", disabled=selected_user.get("active", True), use_container_width=True):
+            set_user_active(selected_user["username"], True, current_user().get("username", "admin"), DEFAULT_USER_DB)
+            st.success(f"User {selected_user['username']} reactivated.")
+            st.rerun()
+
+    with st.expander("User Audit Events", expanded=False):
+        audit_rows = list_user_audit(DEFAULT_USER_DB, limit=100)
+        if audit_rows:
+            st.dataframe(style_operational_table(pd.DataFrame(audit_rows)), use_container_width=True, hide_index=True)
+        else:
+            st.info("No user audit events recorded yet.")
 
 
 def main() -> None:

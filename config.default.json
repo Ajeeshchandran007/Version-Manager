@@ -1,146 +1,92 @@
-{
-  "_comment": "Default deploy-safe configuration. Secret values are supplied through environment variables or Streamlit secrets.",
-  "openai_api_key": "${OPENAI_API_KEY}",
-  "openai_model_name": "gpt-4o-mini",
-  "tavily_api_key": "${TAVILY_API_KEY}",
-  "schedule_cron": "0 9 * * 4",
-  "default_category": "ALL",
-  "smtp": {
-    "server": "${SMTP_SERVER}",
-    "port": 587,
-    "user": "${SMTP_USER}",
-    "password": "${SMTP_PASSWORD}",
-    "sender": "${SMTP_SENDER}",
-    "recipients": [
-      "${SMTP_RECIPIENT_1}",
-      "${SMTP_RECIPIENT_2}"
-    ]
-  },
-  "input_files": {
-    "software_yml": "Input/teams/SourceOne/releases/7.2.12/software.yml",
-    "current_version_pdf": "Input/teams/SourceOne/releases/7.2.12/sample_version.pdf",
-    "testcase_repository_xlsx": "Input/teams/SourceOne/releases/7.2.12/testcaseRepository.xlsx"
-  },
-  "output_files": {
-    "latest_version_json": "output/latest_versions.json",
-    "current_version_json": "output/current_versions.json",
-    "comparison_report_json": "output/comparison_report.json",
-    "vulnerability_report_json": "output/vulnerability_report.json",
-    "package_readiness_json": "output/package_readiness.json",
-    "qa_validation_json": "output/qa_validation.json",
-    "testcase_impact_json": "output/testcase_impact.json",
-    "testcase_impact_xlsx": "output/Test_Case_Impact_Assessment.xlsx",
-    "excel_assessment": "output/Software_Version_Assessment.xlsx"
-  },
-  "vulnerability": {
-    "enabled": true,
-    "nvd_api_key": "${NVD_API_KEY}",
-    "timeout_seconds": 20
-  },
-  "cache": {
-    "enabled": true,
-    "backend": "json",
-    "directory": "output/cache",
-    "metrics_file": "output/cache/cache_metrics.json",
-    "software_versions_ttl_seconds": 604800,
-    "vulnerabilities_ttl_seconds": 86400
-  },
-  "auth": {
-    "enabled": true
-  },
-  "users": [
-    {
-      "username": "admin",
-      "password": "admin",
-      "role": "Admin",
-      "display_name": "Administrator",
-      "team_scope": ["*"]
-    },
-    {
-      "username": "sourceone_release",
-      "password": "sourceone_release",
-      "role": "Release Engineer",
-      "display_name": "SourceOne Release",
-      "team_scope": ["SourceOne"]
-    },
-    {
-      "username": "sourceone_qa",
-      "password": "sourceone_qa",
-      "role": "QA Engineer",
-      "display_name": "SourceOne QA",
-      "team_scope": ["SourceOne"]
-    },
-    {
-      "username": "dps_release",
-      "password": "dps_release",
-      "role": "Release Engineer",
-      "display_name": "DPS Release",
-      "team_scope": ["DPS"]
-    },
-    {
-      "username": "dps_qa",
-      "password": "dps_qa",
-      "role": "QA Engineer",
-      "display_name": "DPS QA",
-      "team_scope": ["DPS"]
-    },
-    {
-      "username": "avamar_release",
-      "password": "avamar_release",
-      "role": "Release Engineer",
-      "display_name": "Avamar Release",
-      "team_scope": ["Avamar"]
-    },
-    {
-      "username": "avamar_qa",
-      "password": "avamar_qa",
-      "role": "QA Engineer",
-      "display_name": "Avamar QA",
-      "team_scope": ["Avamar"]
-    },
-    {
-      "username": "package_release",
-      "password": "package_release",
-      "role": "Release Engineer",
-      "display_name": "Package Team Release",
-      "team_scope": ["PackageTeam"]
-    },
-    {
-      "username": "package_qa",
-      "password": "package_qa",
-      "role": "QA Engineer",
-      "display_name": "Package Team QA",
-      "team_scope": ["PackageTeam"]
-    }
-  ],
-  "servers": {
-    "SQL Server 2019": {
-      "host": "192.168.1.13",
-      "method": "ssh",
-      "user": "es1service",
-      "password": "${SSH_PASSWORD}",
-      "command": "sqlcmd -Q \"SELECT @@VERSION\" -h -1"
-    },
-    "MS Exchange Server 2019": {
-      "host": "192.168.2.11",
-      "method": "ssh",
-      "user": "es1service",
-      "password": "${SSH_PASSWORD}",
-      "command": "powershell -Command \"Get-Command exsetup | % {$_.Fileversioninfo.ProductVersion}\""
-    },
-    "libCurl": {
-      "host": "192.168.2.5",
-      "method": "ssh",
-      "user": "es1service",
-      "password": "${SSH_PASSWORD}",
-      "command": "curl --version"
-    },
-    "OpenSSL": {
-      "host": "192.168.2.5",
-      "method": "ssh",
-      "user": "es1service",
-      "password": "${SSH_PASSWORD}",
-      "command": "openssl version"
-    }
-  }
+﻿{
+    "_comment":  "Default deploy-safe configuration. Secret values are supplied through environment variables or Streamlit secrets.",
+    "openai_api_key":  "${OPENAI_API_KEY}",
+    "openai_model_name":  "gpt-4o-mini",
+    "tavily_api_key":  "${TAVILY_API_KEY}",
+    "schedule_cron":  "0 9 * * 4",
+    "default_category":  "ALL",
+    "smtp":  {
+                 "server":  "${SMTP_SERVER}",
+                 "port":  587,
+                 "user":  "${SMTP_USER}",
+                 "password":  "${SMTP_PASSWORD}",
+                 "sender":  "${SMTP_SENDER}",
+                 "recipients":  [
+                                    "${SMTP_RECIPIENT_1}",
+                                    "${SMTP_RECIPIENT_2}"
+                                ]
+             },
+    "input_files":  {
+                        "software_yml":  "Input/teams/SourceOne/releases/7.2.12/software.yml",
+                        "current_version_pdf":  "Input/teams/SourceOne/releases/7.2.12/sample_version.pdf",
+                        "testcase_repository_xlsx":  "Input/teams/SourceOne/releases/7.2.12/testcaseRepository.xlsx"
+                    },
+    "output_files":  {
+                         "latest_version_json":  "output/latest_versions.json",
+                         "current_version_json":  "output/current_versions.json",
+                         "comparison_report_json":  "output/comparison_report.json",
+                         "vulnerability_report_json":  "output/vulnerability_report.json",
+                         "package_readiness_json":  "output/package_readiness.json",
+                         "qa_validation_json":  "output/qa_validation.json",
+                         "testcase_impact_json":  "output/testcase_impact.json",
+                         "testcase_impact_xlsx":  "output/Test_Case_Impact_Assessment.xlsx",
+                         "excel_assessment":  "output/Software_Version_Assessment.xlsx"
+                     },
+    "vulnerability":  {
+                          "enabled":  true,
+                          "nvd_api_key":  "${NVD_API_KEY}",
+                          "timeout_seconds":  20
+                      },
+    "cache":  {
+                  "enabled":  true,
+                  "backend":  "json",
+                  "directory":  "output/cache",
+                  "metrics_file":  "output/cache/cache_metrics.json",
+                  "software_versions_ttl_seconds":  604800,
+                  "vulnerabilities_ttl_seconds":  86400
+              },
+    "auth":  {
+                 "enabled":  true
+             },
+    "users":  [
+                  {
+                      "username":  "admin",
+                      "display_name":  "Administrator",
+                      "password":  "admin",
+                      "team_scope":  [
+                                         "*"
+                                     ],
+                      "role":  "Admin"
+                  }
+              ],
+    "servers":  {
+                    "SQL Server 2019":  {
+                                            "host":  "192.168.1.13",
+                                            "method":  "ssh",
+                                            "user":  "es1service",
+                                            "password":  "${SSH_PASSWORD}",
+                                            "command":  "sqlcmd -Q \"SELECT @@VERSION\" -h -1"
+                                        },
+                    "MS Exchange Server 2019":  {
+                                                    "host":  "192.168.2.11",
+                                                    "method":  "ssh",
+                                                    "user":  "es1service",
+                                                    "password":  "${SSH_PASSWORD}",
+                                                    "command":  "powershell -Command \"Get-Command exsetup | % {$_.Fileversioninfo.ProductVersion}\""
+                                                },
+                    "libCurl":  {
+                                    "host":  "192.168.2.5",
+                                    "method":  "ssh",
+                                    "user":  "es1service",
+                                    "password":  "${SSH_PASSWORD}",
+                                    "command":  "curl --version"
+                                },
+                    "OpenSSL":  {
+                                    "host":  "192.168.2.5",
+                                    "method":  "ssh",
+                                    "user":  "es1service",
+                                    "password":  "${SSH_PASSWORD}",
+                                    "command":  "openssl version"
+                                }
+                }
 }
