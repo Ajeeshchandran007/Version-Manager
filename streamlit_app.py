@@ -63,7 +63,7 @@ from App.workspace import (
     team_input_software_path,
 )
 from App.workflow_locks import WorkflowAlreadyRunning, workflow_lock
-from App.user_store import DEFAULT_USER_DB, ROLES, delete_user, list_user_audit, list_users, set_user_active, upsert_user
+from App.user_store import DEFAULT_USER_DB, PERMISSION_QA_SIGNOFF, ROLES, delete_user, list_user_audit, list_users, set_user_active, upsert_user
 from Core.compatibility_fetcher import CompatibilityRequirementFetcher
 from Core.comparator import compare
 from Core.excel_reporter import generate_excel_report
@@ -1892,6 +1892,10 @@ def with_actor(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def can_perform_qa_signoff() -> bool:
+    return current_role() == ROLE_ADMIN or PERMISSION_QA_SIGNOFF in current_user().get("permissions", [])
+
+
 def render_readable_table(df: pd.DataFrame) -> None:
     if df.empty:
         st.info("No records found.")
@@ -2541,15 +2545,20 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     context_cols[1].metric("Release Line", active_release_line())
     context_cols[2].metric("Coverage", f"{qa_summary['coverage_percent']:g}%")
     context_cols[3].metric("Not Tested", result_counts.get("NOT TESTED", 0))
-    with st.form("qa_completion_signoff_form"):
-        signoff_comments = st.text_area("Signoff Comments", placeholder="Summarize validation scope, known gaps, or selective coverage rationale.")
-        signoff_by = st.text_input("Signed By", value=current_user().get("display_name", current_user().get("username", "")))
-        review_signoff = st.form_submit_button("Review QA Signoff", type="primary", use_container_width=True)
-    if review_signoff:
-        st.session_state["qa_signoff_pending"] = {
-            "comments": signoff_comments,
-            "signed_by": signoff_by,
-        }
+    if can_perform_qa_signoff():
+        with st.form("qa_completion_signoff_form"):
+            signoff_comments = st.text_area("Signoff Comments", placeholder="Summarize validation scope, known gaps, or selective coverage rationale.")
+            signoff_by = st.text_input("Signed By", value=current_user().get("display_name", current_user().get("username", "")))
+            review_signoff = st.form_submit_button("Review QA Signoff", type="primary", use_container_width=True)
+        if review_signoff:
+            st.session_state["qa_signoff_pending"] = {
+                "comments": signoff_comments,
+                "signed_by": signoff_by,
+            }
+    else:
+        review_signoff = False
+        st.warning("You can update QA validation, but QA completion signoff requires the QA Signoff permission.")
+        st.session_state.pop("qa_signoff_pending", None)
 
     pending_signoff = st.session_state.get("qa_signoff_pending")
     if pending_signoff:
@@ -2578,6 +2587,10 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
         confirm_clicked = False
 
     if confirm_clicked:
+        if not can_perform_qa_signoff():
+            st.error("QA signoff was not saved: missing QA Signoff permission.")
+            st.session_state.pop("qa_signoff_pending", None)
+            st.rerun()
         try:
             signoff = build_qa_signoff(
                 active_team_name(),
@@ -3052,6 +3065,7 @@ def render_admin_user_management() -> None:
             "Display Name": user.get("display_name", user["username"]),
             "Role": user["role"],
             "Team Scope": ", ".join(user.get("team_scope", ["*"])),
+            "QA Signoff": "Yes" if PERMISSION_QA_SIGNOFF in user.get("permissions", []) else "No",
             "Account Status": "Active" if user.get("active", True) else "Inactive - login disabled",
             "Last Login": user.get("last_login_at") or "Never",
             "Can Run Scans": "Yes" if user["role"] in ACTION_ROLES else "No",
@@ -3149,6 +3163,16 @@ def render_admin_user_management() -> None:
                 value=True if selected_user is None else bool(selected_user.get("active", True)),
                 key=f"admin_user_active_{form_key_suffix}",
             )
+        permission_cols = st.columns([3, 1])
+        with permission_cols[0]:
+            qa_signoff_permission = st.checkbox(
+                "Allow QA Completion Signoff",
+                value=PERMISSION_QA_SIGNOFF in (selected_user or {}).get("permissions", []),
+                help="Allows this user to perform final QA signoff for assigned team/release scope.",
+                key=f"admin_user_permission_qa_signoff_{form_key_suffix}",
+            )
+        with permission_cols[1]:
+            st.caption("Admin receives signoff permission automatically on save.")
         available_teams = list_teams()
         existing_scope = selected_user.get("team_scope", ["*"]) if selected_user else []
         all_teams_label = "All Teams"
@@ -3195,6 +3219,7 @@ def render_admin_user_management() -> None:
                 display_name=display_name.strip() or username,
                 role=role,
                 team_scope=["*"] if all_teams else selected_teams,
+                permissions=[PERMISSION_QA_SIGNOFF] if qa_signoff_permission or role == ROLE_ADMIN else [],
                 active=active,
                 actor=current_user().get("username", "admin"),
                 db_path=DEFAULT_USER_DB,

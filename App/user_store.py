@@ -15,6 +15,8 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_USER_DB = BASE_DIR / "output" / "app_users.db"
 ROLES = {"Admin", "Release Engineer", "QA Engineer"}
+PERMISSION_QA_SIGNOFF = "qa_signoff"
+PERMISSIONS = {PERMISSION_QA_SIGNOFF}
 
 
 def normalize_team_scope(raw_scope: Any) -> list[str]:
@@ -41,6 +43,22 @@ def normalize_role(role: Any) -> str:
     return "QA Engineer"
 
 
+def normalize_permissions(raw_permissions: Any, role: str | None = None) -> list[str]:
+    role = normalize_role(role)
+    if role == "Admin":
+        return [PERMISSION_QA_SIGNOFF]
+    if raw_permissions in (None, "", []):
+        return []
+    if isinstance(raw_permissions, str):
+        parts = raw_permissions.split(",")
+    elif isinstance(raw_permissions, list):
+        parts = raw_permissions
+    else:
+        parts = [raw_permissions]
+    cleaned = sorted({str(part).strip() for part in parts if str(part).strip() in PERMISSIONS})
+    return cleaned
+
+
 def init_user_db(db_path: Path = DEFAULT_USER_DB) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(db_path)) as con:
@@ -52,12 +70,16 @@ def init_user_db(db_path: Path = DEFAULT_USER_DB) -> None:
                 display_name TEXT NOT NULL,
                 role TEXT NOT NULL,
                 team_scope_json TEXT NOT NULL,
+                permissions_json TEXT NOT NULL DEFAULT '[]',
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT,
                 last_login_at TEXT
             )
         """)
+        columns = {row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        if "permissions_json" not in columns:
+            con.execute("ALTER TABLE users ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'")
         con.execute("""
             CREATE TABLE IF NOT EXISTS user_audit (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +110,7 @@ def seed_users_from_config(config_users: list[dict[str, Any]], db_path: Path = D
             display_name=str(user.get("display_name") or username),
             role=normalize_role(user.get("role")),
             team_scope=normalize_team_scope(user.get("team_scope")),
+            permissions=normalize_permissions(user.get("permissions"), user.get("role")),
             active=True,
             actor="system-seed",
             db_path=db_path,
@@ -96,7 +119,7 @@ def seed_users_from_config(config_users: list[dict[str, Any]], db_path: Path = D
 
 def list_users(db_path: Path = DEFAULT_USER_DB, include_inactive: bool = True) -> list[dict[str, Any]]:
     init_user_db(db_path)
-    sql = "SELECT username, display_name, role, team_scope_json, active, created_at, updated_at, last_login_at FROM users"
+    sql = "SELECT username, display_name, role, team_scope_json, permissions_json, active, created_at, updated_at, last_login_at FROM users"
     if not include_inactive:
         sql += " WHERE active=1"
     sql += " ORDER BY username"
@@ -142,6 +165,7 @@ def upsert_user(
     display_name: str,
     role: str,
     team_scope: list[str] | str,
+    permissions: list[str] | str | None = None,
     active: bool,
     actor: str,
     db_path: Path = DEFAULT_USER_DB,
@@ -152,6 +176,7 @@ def upsert_user(
         raise ValueError("Username is required.")
     role = normalize_role(role)
     scope = normalize_team_scope(team_scope)
+    permission_list = normalize_permissions(permissions, role)
     now = _now()
 
     with closing(sqlite3.connect(db_path)) as con:
@@ -162,17 +187,17 @@ def upsert_user(
                 salt, password_hash = _hash_password(password)
                 con.execute(
                     """UPDATE users
-                       SET password_hash=?, salt=?, display_name=?, role=?, team_scope_json=?,
+                       SET password_hash=?, salt=?, display_name=?, role=?, team_scope_json=?, permissions_json=?,
                            active=?, updated_at=?
                        WHERE username=?""",
-                    (password_hash, salt, display_name, role, json.dumps(scope), int(active), now, existing["username"]),
+                    (password_hash, salt, display_name, role, json.dumps(scope), json.dumps(permission_list), int(active), now, existing["username"]),
                 )
             else:
                 con.execute(
                     """UPDATE users
-                       SET display_name=?, role=?, team_scope_json=?, active=?, updated_at=?
+                       SET display_name=?, role=?, team_scope_json=?, permissions_json=?, active=?, updated_at=?
                        WHERE username=?""",
-                    (display_name, role, json.dumps(scope), int(active), now, existing["username"]),
+                    (display_name, role, json.dumps(scope), json.dumps(permission_list), int(active), now, existing["username"]),
                 )
             target = existing["username"]
             action = "update_user"
@@ -182,15 +207,15 @@ def upsert_user(
             salt, password_hash = _hash_password(password)
             con.execute(
                 """INSERT INTO users
-                   (username, password_hash, salt, display_name, role, team_scope_json, active, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (username, password_hash, salt, display_name or username, role, json.dumps(scope), int(active), now, now),
+                   (username, password_hash, salt, display_name, role, team_scope_json, permissions_json, active, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (username, password_hash, salt, display_name or username, role, json.dumps(scope), json.dumps(permission_list), int(active), now, now),
             )
             target = username
             action = "create_user"
         con.execute(
             "INSERT INTO user_audit (actor, action, target_username, details_json, ts) VALUES (?, ?, ?, ?, ?)",
-            (actor, action, target, json.dumps({"role": role, "team_scope": scope, "active": active}), now),
+            (actor, action, target, json.dumps({"role": role, "team_scope": scope, "permissions": permission_list, "active": active}), now),
         )
         con.commit()
     return get_user(username, db_path) or {}
@@ -216,12 +241,13 @@ def delete_user(username: str, actor: str, db_path: Path = DEFAULT_USER_DB) -> b
     now = _now()
     with closing(sqlite3.connect(db_path)) as con:
         con.row_factory = sqlite3.Row
-        existing = con.execute("SELECT username, role, team_scope_json, active FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+        existing = con.execute("SELECT username, role, team_scope_json, permissions_json, active FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
         if not existing:
             return False
         details = {
             "role": existing["role"],
             "team_scope": normalize_team_scope(json.loads(existing["team_scope_json"] or "[]")),
+            "permissions": normalize_permissions(json.loads(existing["permissions_json"] or "[]"), existing["role"]),
             "active": bool(existing["active"]),
         }
         con.execute("DELETE FROM users WHERE username=?", (existing["username"],))
@@ -250,6 +276,7 @@ def _row_to_user(row: sqlite3.Row) -> dict[str, Any]:
         "display_name": row["display_name"] or row["username"],
         "role": normalize_role(row["role"]),
         "team_scope": normalize_team_scope(json.loads(row["team_scope_json"] or "[]")),
+        "permissions": normalize_permissions(json.loads(row["permissions_json"] or "[]"), row["role"]),
         "active": bool(row["active"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from tests.conftest_path import PROJECT_ROOT  # noqa: F401
 from App.user_store import (
+    PERMISSION_QA_SIGNOFF,
     authenticate_user,
     delete_user,
     list_user_audit,
@@ -33,6 +34,7 @@ class UserStoreTests(unittest.TestCase):
 
             self.assertIsNotNone(user)
             self.assertEqual(user["role"], "Admin")
+            self.assertEqual(user["permissions"], [PERMISSION_QA_SIGNOFF])
             self.assertTrue(user["last_login_at"])
             self.assertIsNone(authenticate_user("admin", "wrong", db_path))
 
@@ -45,6 +47,7 @@ class UserStoreTests(unittest.TestCase):
                 display_name="QA One",
                 role="QA Engineer",
                 team_scope=["SourceOne"],
+                permissions=[PERMISSION_QA_SIGNOFF],
                 active=True,
                 actor="admin",
                 db_path=db_path,
@@ -55,6 +58,7 @@ class UserStoreTests(unittest.TestCase):
                 display_name="QA One Updated",
                 role="Release Engineer",
                 team_scope="SourceOne,DPS",
+                permissions=[],
                 active=True,
                 actor="admin",
                 db_path=db_path,
@@ -65,6 +69,7 @@ class UserStoreTests(unittest.TestCase):
             self.assertEqual(users[0]["display_name"], "QA One Updated")
             self.assertEqual(users[0]["role"], "Release Engineer")
             self.assertEqual(users[0]["team_scope"], ["SourceOne", "DPS"])
+            self.assertEqual(users[0]["permissions"], [])
             self.assertFalse(users[0]["active"])
             self.assertIsNone(authenticate_user("qa1", "pw1", db_path))
             self.assertGreaterEqual(len(list_user_audit(db_path)), 3)
@@ -78,6 +83,7 @@ class UserStoreTests(unittest.TestCase):
                 display_name="Mistake User",
                 role="QA Engineer",
                 team_scope=["SourceOne"],
+                permissions=[],
                 active=True,
                 actor="admin",
                 db_path=db_path,
