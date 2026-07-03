@@ -38,6 +38,7 @@ from App.qa_history import (
     load_qa_history,
     load_release_qa_history,
 )
+from App.qa_updates import QAUpdateConflict, build_qa_update_payload, save_qa_row_update
 from App.qa_signoff import build_qa_signoff, load_qa_signoff, save_qa_signoff
 from App.scan_reports import (
     load_parsed_scan_findings,
@@ -60,6 +61,7 @@ from App.workspace import (
     project_path,
     team_input_software_path,
 )
+from App.workflow_locks import WorkflowAlreadyRunning, workflow_lock
 from Core.compatibility_fetcher import CompatibilityRequirementFetcher
 from Core.comparator import compare
 from Core.excel_reporter import generate_excel_report
@@ -712,66 +714,39 @@ def save_qa_manual_update(
     test_date: Any,
     tested_by: str,
     evidence_file: Any | None,
+    expected_revision: int,
 ) -> dict[str, Any]:
     qa_file = active_output_path("qa_validation.json")
-    evidence_dir = qa_file.parent / "qa_evidence"
     data = load_json(str(qa_file), file_mtime(qa_file))
     if software_name not in data:
         raise ValueError(f"QA record not found for {software_name}")
 
-    evidence_path = ""
-    if evidence_file is not None:
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-        safe_name = "".join(ch if ch.isalnum() or ch in {".", "-", "_"} else "_" for ch in evidence_file.name)
-        target = evidence_dir / f"{software_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{safe_name}"
-        target.write_bytes(evidence_file.getbuffer())
-        evidence_path = str(target)
-
     record = data[software_name]
-    test_case_count = max(safe_int(test_case_count), 0)
-    test_cases_passed = max(safe_int(test_cases_passed), 0)
-    test_cases_failed = max(safe_int(test_cases_failed), 0)
-    test_cases_blocked = max(safe_int(test_cases_blocked), 0)
-    test_cases_executed = test_cases_passed + test_cases_failed + test_cases_blocked
-    if test_case_count:
-        test_cases_executed = min(test_cases_executed, test_case_count)
-        coverage_pct = round((test_cases_executed / test_case_count) * 100, 1)
-        coverage_label = f"{coverage_pct:g}%"
-    else:
-        coverage_label = "Not Required"
-    record["Installation Status"] = installation_status
-    record["Test Result"] = test_result
-    record["Test Case Count"] = test_case_count
-    record["Test Cases Passed"] = test_cases_passed
-    record["Test Cases Failed"] = test_cases_failed
-    record["Test Cases Blocked / Not Tested"] = test_cases_blocked
-    record["Test Cases Executed"] = test_cases_executed
-    record["Test Case Coverage %"] = coverage_label
-    record["Test Notes"] = notes.strip() or record.get("Test Notes", "")
-    record["Test Date"] = str(test_date)
-    record["Tested By"] = tested_by.strip() or current_user().get("username", "unknown")
-    record["Manual QA Updated"] = True
-    record["Last QA Update"] = datetime.now().isoformat(timespec="seconds")
-    if evidence_path:
-        record["Evidence File"] = evidence_path
-
-    checks = record.get("Functional Validation") or {}
-    if test_result == "PASS":
-        record["Functional Validation"] = {key: True for key in checks} if checks else {
-            "Application Launch": True,
-            "Service Running": True,
-            "Registry Verified": True,
-            "Files Installed": True,
-            "Environment Variables": True,
-            "License Activated": True,
-        }
-    elif test_result == "FAIL":
-        record["Functional Validation"] = {key: False for key in checks} if checks else {}
-
-    qa_file.parent.mkdir(parents=True, exist_ok=True)
-    qa_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    updates = build_qa_update_payload(
+        installation_status,
+        test_result,
+        test_case_count,
+        test_cases_passed,
+        test_cases_failed,
+        test_cases_blocked,
+        notes,
+        test_date,
+        existing_notes=str(record.get("Test Notes") or ""),
+    )
+    updates["Tested By"] = tested_by.strip() or current_user().get("username", "unknown")
+    updated = save_qa_row_update(
+        qa_file,
+        software_name,
+        updates,
+        expected_revision=expected_revision,
+        updated_by=current_user().get("username", "unknown"),
+        evidence_file=evidence_file,
+        db_path=app_state_db_path(),
+        team=active_team_name(),
+        release_line=active_release_line(),
+    )
     clear_dashboard_cache()
-    return record
+    return updated
 
 
 def run_async(coro: Any) -> Any:
@@ -794,6 +769,15 @@ def runtime_state() -> dict[str, Any]:
         "server_querier": ServerQuerier(),
         "vulnerability_checker": VulnerabilityChecker(),
     }
+
+
+def app_state_db_path() -> Path:
+    return active_output_path("__placeholder__").parent / "app_state.db"
+
+
+def workflow_owner() -> str:
+    user = current_user()
+    return str(user.get("username") or user.get("display_name") or "unknown")
 
 
 def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
@@ -975,13 +959,23 @@ def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
 
 
 async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str, Any]:
-    state = runtime_state()
-    workflow = LangGraphVersionManager(build_streamlit_agent_tools(state))
-    final_state = await workflow.run(
-        "Run the full software version, security, package readiness, compatibility, QA validation, and reporting workflow.",
-        category=category,
-        force_refresh=force_refresh,
-    )
+    try:
+        with workflow_lock(
+            app_state_db_path(),
+            team=active_team_name(),
+            release=active_release_line(),
+            scope="workflow",
+            owner=workflow_owner(),
+        ):
+            state = runtime_state()
+            workflow = LangGraphVersionManager(build_streamlit_agent_tools(state))
+            final_state = await workflow.run(
+                "Run the full software version, security, package readiness, compatibility, QA validation, and reporting workflow.",
+                category=category,
+                force_refresh=force_refresh,
+            )
+    except WorkflowAlreadyRunning as exc:
+        return {"error": str(exc), "operation": "full_pipeline"}
     comparison = final_state.get("comparison_results", {})
     vulnerabilities = final_state.get("vulnerability_results", {})
     report_package = final_state.get("report_package", {})
@@ -1014,8 +1008,18 @@ async def trigger_full_pipeline(category: str, force_refresh: bool) -> dict[str,
 
 
 async def trigger_scoped_pipeline(category: str, force_refresh: bool, workflow_scope: str) -> dict[str, Any]:
-    state = runtime_state()
-    summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope=workflow_scope)
+    try:
+        with workflow_lock(
+            app_state_db_path(),
+            team=active_team_name(),
+            release=active_release_line(),
+            scope="workflow",
+            owner=workflow_owner(),
+        ):
+            state = runtime_state()
+            summary = await _run_pipeline(state, category, force_refresh=force_refresh, workflow_scope=workflow_scope)
+    except WorkflowAlreadyRunning as exc:
+        return {"error": str(exc), "operation": f"{workflow_scope}_workflow"}
     if "error" in summary:
         return {"error": summary["error"], "operation": f"{workflow_scope}_workflow"}
     return {
@@ -1547,6 +1551,9 @@ def normalize_qa_validation(data: dict[str, Any]) -> pd.DataFrame:
                 "Test Date": value(record, "Test Date", default=""),
                 "Tested By": value(record, "Tested By", default=""),
                 "Evidence File": value(record, "Evidence File", default=""),
+                "QA Revision": safe_int(value(record, "QA Revision", default=0)),
+                "Last QA Update": value(record, "Last QA Update", default=""),
+                "Last QA Updated By": value(record, "Last QA Updated By", default=""),
             }
         )
     return pd.DataFrame(rows)
@@ -2393,6 +2400,7 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
     current_passed = safe_int(selected_record.get("Test Cases Passed"))
     current_failed = safe_int(selected_record.get("Test Cases Failed"))
     current_blocked = safe_int(selected_record.get("Test Cases Blocked / Not Tested"))
+    expected_revision = safe_int(selected_record.get("QA Revision"))
     current_executed = safe_int(selected_record.get("Test Cases Executed"))
     if current_executed and not (current_passed or current_failed or current_blocked):
         current_passed = current_executed if current_result in {"PASS", "BASELINE VERIFIED"} else 0
@@ -2472,9 +2480,12 @@ def render_qa_validation(qa_df: pd.DataFrame) -> None:
                 test_date,
                 tested_by,
                 evidence_file,
+                expected_revision,
             )
             st.success(f"QA result saved for {software_name}.")
             st.rerun()
+        except QAUpdateConflict as exc:
+            st.warning(str(exc))
         except Exception as exc:
             st.error(f"QA result was not saved: {exc}")
 
