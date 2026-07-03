@@ -107,7 +107,7 @@ def _load_streamlit_secrets_config() -> dict | None:
 
 def _load_default_config() -> dict | None:
     try:
-        with open(_DEFAULT_CONFIG_PATH, "r") as f:
+        with open(_DEFAULT_CONFIG_PATH, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except FileNotFoundError:
         return None
