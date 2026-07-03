@@ -278,15 +278,6 @@ def render_dashboard(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln
             hide_index=True,
         )
 
-    st.subheader("Recent Scan Timeline")
-    if not metrics_df.empty and {"metric", "value", "ts"}.issubset(metrics_df.columns):
-        timeline = metrics_df.copy()
-        timeline["Duration Seconds"] = timeline["value"].astype(float) / 1000
-        st.dataframe(timeline[["ts", "metric", "Duration Seconds", "trace_id"]].tail(8), use_container_width=True, hide_index=True)
-    else:
-        st.info("No scan timeline metrics available.")
-
-
 def render_dashboard_page(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame, metrics_df: pd.DataFrame, ctx: Any) -> None:
     render_context_selector(ctx, "dashboard")
     st.caption(f"Viewing: {active_team_name()} / {active_release_line()}")
