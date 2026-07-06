@@ -119,9 +119,9 @@ BASE_PAGES = [
     "Latest Versions",
     "Version Comparison",
     "Compatibility Check",
-    "Workflow Monitor",
     "Reports",
 ]
+WORKFLOW_MONITOR_PAGE = "Workflow Monitor"
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
@@ -1980,19 +1980,22 @@ def render_access_denied(required: str) -> None:
 
 def pages_for_role(role: str) -> list[str]:
     pages = [*BASE_PAGES]
+    if role in ADMIN_ROLES:
+        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
+        pages.insert(insert_at, WORKFLOW_MONITOR_PAGE)
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         insert_at = pages.index("Compatibility Check") if "Compatibility Check" in pages else len(pages)
         for page in reversed(RELEASE_PAGES):
             pages.insert(insert_at, page)
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
-        insert_at = pages.index("Workflow Monitor") if "Workflow Monitor" in pages else len(pages)
+        insert_at = pages.index(WORKFLOW_MONITOR_PAGE) if WORKFLOW_MONITOR_PAGE in pages else pages.index("Reports") if "Reports" in pages else len(pages)
         for page in reversed(SECURITY_PAGES):
             pages.insert(insert_at, page)
     elif role == ROLE_QA_ENGINEER:
-        insert_at = pages.index("Workflow Monitor") if "Workflow Monitor" in pages else len(pages)
+        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
         pages.insert(insert_at, "Cache Analytics")
     if role in {ROLE_ADMIN, ROLE_QA_ENGINEER}:
-        insert_at = pages.index("Workflow Monitor") if "Workflow Monitor" in pages else len(pages)
+        insert_at = pages.index(WORKFLOW_MONITOR_PAGE) if WORKFLOW_MONITOR_PAGE in pages else pages.index("Reports") if "Reports" in pages else len(pages)
         for page in reversed(QA_PAGES):
             pages.insert(insert_at, page)
     if role in ADMIN_ROLES:
@@ -3597,8 +3600,11 @@ def main() -> None:
         render_qa_validation(qa_df)
     elif page == "Vulnerability Assessment":
         render_vulnerabilities(vuln_df)
-    elif page == "Workflow Monitor":
-        render_workflow(metrics_df)
+    elif page == WORKFLOW_MONITOR_PAGE:
+        if current_role() != ROLE_ADMIN:
+            render_access_denied("Admin")
+        else:
+            render_workflow(metrics_df)
     elif page == "Cache Analytics":
         render_cache(cache_metrics)
     elif page == "Reports":
