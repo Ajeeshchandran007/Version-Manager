@@ -372,7 +372,15 @@ def build_assistant_context(
     if role in {ROLE_ADMIN, ROLE_QA_ENGINEER} and not qa_df.empty:
         context["qa_validation"] = records_for_assistant(
             qa_df,
-            ["Software Name", "Installation Status", "Test Result", "Test Cases Passed", "Test Cases Failed", "Test Notes"],
+            [
+                "Software Name",
+                "Installation Status",
+                "Test Result",
+                "Tested By",
+                "Test Cases Passed",
+                "Test Cases Failed",
+                "Test Notes",
+            ],
         )
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER} and not vuln_df.empty:
         context["vulnerabilities"] = {
@@ -420,6 +428,49 @@ def _recommended_testcase_requested(prompt: str) -> bool:
 def _current_release_requested(prompt: str) -> bool:
     prompt_lower = prompt.lower()
     return "release" in prompt_lower and any(term in prompt_lower for term in ("current", "active", "selected", "which", "what"))
+
+
+def _tested_by_requested(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(
+        term in prompt_lower
+        for term in (
+            "who tested",
+            "tested by",
+            "tester",
+            "who validated",
+            "validated by",
+            "who executed",
+        )
+    )
+
+
+def _answer_tested_by(prompt: str, qa_df: pd.DataFrame) -> str:
+    if qa_df.empty:
+        return "I do not have QA validation rows for the selected team/release yet. Run the QA workflow or load QA validation data first."
+
+    prompt_lower = prompt.lower()
+    rows = qa_df.copy()
+    if "Software Name" in rows.columns:
+        matching = rows[rows["Software Name"].fillna("").astype(str).str.lower().apply(lambda name: bool(name and name in prompt_lower))]
+        if not matching.empty:
+            rows = matching
+
+    display_rows: list[str] = []
+    for _, row in rows.head(20).iterrows():
+        software = str(row.get("Software Name") or "Unknown software").strip()
+        tested_by = str(row.get("Tested By") or "").strip()
+        result = str(row.get("Test Result") or "").strip()
+        tested_label = tested_by or "Not recorded"
+        result_label = result or "Not tested"
+        display_rows.append(f"- **{software}**: {tested_label} ({result_label})")
+
+    if not display_rows:
+        return "I found QA validation data, but no tester details are recorded for this selection."
+
+    team = active_team_name()
+    release = active_release_line()
+    return f"Tester details for **{team} / {release}**:\n\n" + "\n".join(display_rows)
 
 
 def _load_json_file(path) -> dict[str, Any]:
@@ -522,7 +573,31 @@ def _answer_current_release(prompt: str) -> str:
     return f"I found **{team} / {release}** as the best matching generated release context. Other available contexts: {other}."
 
 
-def _tool_first_answer(prompt: str) -> dict[str, str] | None:
+def _load_signoff_for_context(team: str, release: str) -> dict[str, Any]:
+    if team and release:
+        path = WORKSPACES_DIR / team / "releases" / release / "output" / "qa_signoff.json"
+        data = _load_json_file(path)
+        if data:
+            return {**data, "_source_context": f"{team} / {release}", "_exact_context": True}
+    active = load_qa_signoff(active_output_path("__placeholder__").parent)
+    if active:
+        return {**active, "_source_context": f"{active.get('product', team)} / {active.get('release_line', release)}", "_exact_context": True}
+    if team and WORKSPACES_DIR.exists():
+        for path in sorted(WORKSPACES_DIR.glob(f"{team}/releases/*/output/qa_signoff.json"), reverse=True):
+            data = _load_json_file(path)
+            if data:
+                release_name = path.parts[-3]
+                return {**data, "_source_context": f"{team} / {release_name}", "_exact_context": False}
+    return {}
+
+
+def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | None:
+    if _tested_by_requested(prompt):
+        return {
+            "content": _answer_tested_by(prompt, qa_df),
+            "source": "Used app tool: QA Tester Details",
+            "widget": "",
+        }
     if _current_release_requested(prompt):
         return {
             "content": _answer_current_release(prompt),
@@ -553,6 +628,8 @@ def _render_qa_dashboard_widget(qa_summary: dict[str, int], app_context: dict[st
     status_label = status.replace("QA ", "").replace("With", "with").strip()
     signed_by = escape(str(signoff.get("signed_by") or "Not signed"))
     signed_date = escape(_format_signed_date(signoff.get("signed_date")))
+    signoff_context = escape(str(signoff.get("_source_context") or f"{active_team_name()} / {release}"))
+    signoff_context_label = "Signoff source" if signoff.get("_exact_context") is False else "Signoff context"
     st.markdown(
         f"""
         <div class="vm-qa-widget">
@@ -591,6 +668,10 @@ def _render_qa_dashboard_widget(qa_summary: dict[str, int], app_context: dict[st
                 <div class="vm-qa-signoff-row">
                     <div class="vm-qa-signoff-label">Signed date</div>
                     <div class="vm-qa-signoff-value">{signed_date}</div>
+                </div>
+                <div class="vm-qa-signoff-row">
+                    <div class="vm-qa-signoff-label">{signoff_context_label}</div>
+                    <div class="vm-qa-signoff-value">{signoff_context}</div>
                 </div>
             </div>
         </div>
@@ -673,7 +754,7 @@ def render_ai_assistant(
     role = current_role()
     app_context = build_assistant_context(current_df, comparison_df, vuln_df, readiness_df, qa_df, metrics_df)
     qa_summary = _qa_summary(qa_df)
-    signoff = load_qa_signoff(active_output_path("__placeholder__").parent)
+    signoff = _load_signoff_for_context(active_team_name(), active_release_line() or str(app_context.get("release") or ""))
     st.markdown(
         f"""
         <div class="vm-claude-page">
@@ -739,7 +820,7 @@ def render_ai_assistant(
         return
 
     st.session_state[history_key].append({"role": "user", "content": prompt})
-    tool_answer = _tool_first_answer(prompt)
+    tool_answer = _tool_first_answer(prompt, qa_df)
     if tool_answer:
         answer = tool_answer["content"]
         widget = tool_answer.get("widget", "")
