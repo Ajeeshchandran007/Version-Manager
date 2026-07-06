@@ -15,6 +15,7 @@ import streamlit as st
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from App.assistant_chat import ROLE_ASSISTANT_PAGES, render_ai_assistant as render_assistant_chat
 from App.auth import (
     ROLE_ADMIN,
     ROLE_QA_ENGINEER,
@@ -116,6 +117,7 @@ ADMIN_ROLES = {ROLE_ADMIN}
 BASE_PAGES = [
     "Dashboard",
     "Software Inventory",
+    "Operations",
     "Latest Versions",
     "Version Comparison",
     "Compatibility Check",
@@ -1980,24 +1982,26 @@ def render_access_denied(required: str) -> None:
 
 def pages_for_role(role: str) -> list[str]:
     pages = [*BASE_PAGES]
-    if role in ADMIN_ROLES:
-        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
-        pages.insert(insert_at, WORKFLOW_MONITOR_PAGE)
+    if role not in ACTION_ROLES and "Operations" in pages:
+        pages.remove("Operations")
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         insert_at = pages.index("Compatibility Check") if "Compatibility Check" in pages else len(pages)
         for page in reversed(RELEASE_PAGES):
             pages.insert(insert_at, page)
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
-        insert_at = pages.index(WORKFLOW_MONITOR_PAGE) if WORKFLOW_MONITOR_PAGE in pages else pages.index("Reports") if "Reports" in pages else len(pages)
+        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
         for page in reversed(SECURITY_PAGES):
             pages.insert(insert_at, page)
-    elif role == ROLE_QA_ENGINEER:
-        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
-        pages.insert(insert_at, "Cache Analytics")
     if role in {ROLE_ADMIN, ROLE_QA_ENGINEER}:
-        insert_at = pages.index(WORKFLOW_MONITOR_PAGE) if WORKFLOW_MONITOR_PAGE in pages else pages.index("Reports") if "Reports" in pages else len(pages)
+        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
         for page in reversed(QA_PAGES):
             pages.insert(insert_at, page)
+    assistant_page = ROLE_ASSISTANT_PAGES.get(role, "AI Assistant")
+    insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
+    pages.insert(insert_at, assistant_page)
+    if role in ADMIN_ROLES:
+        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
+        pages.insert(insert_at, WORKFLOW_MONITOR_PAGE)
     if role in ADMIN_ROLES:
         pages.extend(ADMIN_PAGES)
     return pages
@@ -2194,8 +2198,6 @@ def render_sidebar(config: dict[str, Any], workflow_status: str, last_scan: str)
             st.rerun()
         st.divider()
         pages = pages_for_role(current_role())
-        if can_run_operations():
-            pages.insert(2, "Operations")
         return st.radio(
             "Navigation",
             pages,
@@ -2350,6 +2352,26 @@ def page_context() -> SimpleNamespace:
         value=value,
         visible_output_files_for_role=visible_output_files_for_role,
         with_actor=with_actor,
+    )
+
+
+def render_ai_assistant(
+    current_df: pd.DataFrame,
+    comparison_df: pd.DataFrame,
+    vuln_df: pd.DataFrame,
+    readiness_df: pd.DataFrame,
+    qa_df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+) -> None:
+    render_assistant_chat(
+        current_df,
+        comparison_df,
+        vuln_df,
+        readiness_df,
+        qa_df,
+        metrics_df,
+        render_context_selector=render_context_selector,
+        run_async=run_async,
     )
 
 
@@ -3584,6 +3606,8 @@ def main() -> None:
 
     if page == "Dashboard":
         render_dashboard_page(current_df, comparison_df, vuln_df, metrics_df)
+    elif page in set(ROLE_ASSISTANT_PAGES.values()):
+        render_ai_assistant(current_df, comparison_df, vuln_df, readiness_df, qa_df, metrics_df)
     elif page == "Operations":
         render_operations(config)
     elif page == "Software Inventory":
