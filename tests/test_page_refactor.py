@@ -29,6 +29,7 @@ from App.navigation import pages_for_role
 from App.assistant_chat import ROLE_ASSISTANT_PAGES
 from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER
 from App.data_loaders import inventory_source_label
+from App.workspace import active_team_name
 
 
 class PageRefactorTests(unittest.TestCase):
@@ -79,6 +80,10 @@ class PageRefactorTests(unittest.TestCase):
         self.assertGreater(qa_pages.index("Cache Analytics"), qa_pages.index("Reports"))
         self.assertGreater(admin_pages.index("Cache Analytics"), admin_pages.index("Reports"))
         self.assertGreater(release_pages.index("Cache Analytics"), release_pages.index("Reports"))
+
+    def test_active_team_defaults_to_first_alphabetical_team(self):
+        with patch("App.workspace.allowed_teams_for_user", return_value=["Cisco", "DPS", "SourceOne"]):
+            self.assertEqual(active_team_name(), "Cisco")
 
     def test_qa_signoff_save_load_and_history_record(self):
         qa_df = pd.DataFrame(
