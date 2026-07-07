@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from App.formatting import format_epoch_ts, format_ts, parse_ts
+from App.server_config import load_server_configs
 from App.workspace import (
     BASE_DIR,
     active_config,
@@ -197,20 +198,33 @@ def load_vendor_compatibility_requirements(
 def normalize_current(data: dict[str, Any]) -> pd.DataFrame:
     rows = []
     fallback_scan_time = format_epoch_ts(file_mtime(active_output_path("current_versions.json")))
+    server_configs = load_server_configs(active_config(load_config()))
     for name, record in data.items():
+        source = value(record, "source", default="Unknown")
         rows.append(
             {
                 "Software Name": name,
                 "Vendor": vendor_for(name),
                 "Current Version": display_version(name, record, "Build Version", "version"),
                 "Current CU": value(record, "Cumulative Update (CU)", "cu", default=""),
-                "Server Name": "Configured Server" if value(record, "source") == "live server" else "PDF Inventory",
+                "Server Name": inventory_source_label(name, str(source), server_configs),
                 "Environment": "Production",
                 "Last Scanned": format_ts(value(record, "last_scanned", default="")) if value(record, "last_scanned", default="") else fallback_scan_time,
-                "Source": value(record, "source", default="Unknown"),
+                "Source": source,
             }
         )
     return pd.DataFrame(rows)
+
+
+def inventory_source_label(
+    software_name: str,
+    source: str,
+    server_configs: dict[str, Any] | None = None,
+) -> str:
+    source_value = str(source or "").lower()
+    if source_value == "live server":
+        return "Configured Server" if software_name in (server_configs or {}) else "Previous Server Scan"
+    return "PDF Inventory" if "pdf" in source_value or "fallback" in source_value else "Inventory Evidence"
 
 
 def configured_inventory_from_active_software_yml() -> tuple[pd.DataFrame, Path]:

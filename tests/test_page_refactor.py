@@ -28,6 +28,7 @@ from App.qa_signoff import build_qa_signoff, load_qa_signoff, save_qa_signoff
 from App.navigation import pages_for_role
 from App.assistant_chat import ROLE_ASSISTANT_PAGES
 from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER
+from App.data_loaders import inventory_source_label
 
 
 class PageRefactorTests(unittest.TestCase):
@@ -171,6 +172,14 @@ class PageRefactorTests(unittest.TestCase):
         labels = [label for label, _ in files]
         self.assertIn("Management Report - HTML", labels)
         self.assertIn("QA Validation Data", labels)
+
+    def test_inventory_source_label_requires_active_server_config(self):
+        self.assertEqual(
+            inventory_source_label("OpenSSL", "live server", {"OpenSSL": {"host": "server"}}),
+            "Configured Server",
+        )
+        self.assertEqual(inventory_source_label("OpenSSL", "live server", {}), "Previous Server Scan")
+        self.assertEqual(inventory_source_label("OpenSSL", "PDF fallback - server unreachable", {}), "PDF Inventory")
 
     def test_qa_signoff_permission_helper_uses_role_or_permission(self):
         with patch("App.pages.qa_validation.current_role", return_value="Admin"), patch(
