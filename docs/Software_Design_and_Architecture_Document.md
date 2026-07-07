@@ -9,7 +9,7 @@
 | Primary Runtime | Python |
 | Document Type | Enterprise Software Design Document (SDD) and Architecture Document |
 | Diagram Standard | PlantUML and text-based diagrams; Mermaid is intentionally not used |
-| Repository Scope | `mcp_server.py`, `agent/`, `Core/`, `Utils/`, `streamlit_app.py`, `tests/`, `Input/`, `output/` |
+| Repository Scope | `streamlit_app.py`, `App/pages/`, `App/data_loaders.py`, `App/workflow_actions.py`, `App/workflow_ui.py`, `mcp_server.py`, `agent/`, `Core/`, `Utils/`, `tests/`, `Input/`, `output/` |
 
 ## 1. Executive Summary
 
@@ -161,6 +161,8 @@ package "External Integrations" {
   queue "SMTP" as Smtp
 }
 
+Streamlit --> Pages
+Pages --> MCP
 Streamlit --> MCP
 Claude --> MCP
 CLI --> ReAct
@@ -229,24 +231,53 @@ MCP --> SQLite
 
 ## 6. Component Design
 
-### 6.1 Streamlit UI (`streamlit_app.py`)
+### 6.1 Streamlit UI Shell and Page Package
 
 | Attribute | Description |
 |---|---|
-| Purpose | Provides an interactive operator interface for admins, release engineers, and QA users. |
-| Responsibilities | Authentication/role-aware views, pipeline execution controls, configuration display/edit workflows, report visualization, status summaries, cache/report inspection. |
-| Technologies | Streamlit, Altair, Python standard libraries, local project services. |
-| Inputs | User credentials, role selection, category selection, refresh controls, local output files. |
-| Outputs | Dashboards, charts, tables, report previews, operational status indicators. |
-| Integrations | MCP server/pipeline functions, `config.json`, `output/`, cache metrics, generated Excel/JSON artifacts. |
-| Communication | Local Python calls and file-based artifact consumption. In a future deployment, this boundary should move to authenticated HTTP/MCP calls. |
+| Shell | `streamlit_app.py` |
+| Page Package | `App/pages/` |
+| Purpose | Provides an interactive operator interface for admins, release engineers, and QA users while keeping the Streamlit entry point thin and maintainable. |
+| Shell Responsibilities | Page configuration, authentication gate, schedule synchronization, data loading orchestration, page routing, and construction of the shared `page_context()` adapter. |
+| Page Responsibilities | Role-specific UI screens, Streamlit widgets, page-level actions, tables, charts, report previews, QA signoff, scanner upload, user management, and cache/audit views. |
+| Technologies | Streamlit, Altair, pandas, modular Python page modules, local project services. |
+| Inputs | User credentials, role selection, team/release context, refresh controls, uploaded files, local output artifacts. |
+| Outputs | Dashboards, charts, tables, report previews, operational status indicators, QA updates, scanner findings, user administration changes. |
+| Integrations | `App/data_loaders.py`, `App/workflow_actions.py`, `App/workflow_ui.py`, `config.json`, scoped `output/`, generated Excel/JSON artifacts. |
+| Communication | Local Python calls through a narrow page context. Future deployment can move this boundary to authenticated HTTP/MCP calls. |
+
+Current page package layout:
+
+| Module | Responsibility |
+|---|---|
+| `App/pages/context.py` | Team and product release selector used by dashboard and operations pages. |
+| `App/pages/dashboard.py` | Dashboard, software inventory, latest versions, version comparison, package readiness, and compatibility check. |
+| `App/pages/operations.py` | Manual workflow actions, schedule controls, role workflow execution, and operation summaries. |
+| `App/pages/qa_validation.py` | QA validation dashboard, manual QA update, evidence upload, QA completion signoff, and signoff history. |
+| `App/pages/security.py` | Vulnerability assessment, uploaded scanner report parsing, security heatmap, and review queue. |
+| `App/pages/admin.py` | Audit logs, settings, admin user management, release input upload, and cache analytics. |
+| `App/pages/reports.py` | Report package download and HTML email preview. |
+| `App/pages/support.py` | Shared page helpers for posture cards, output visibility, and operation result rendering. |
 
 Workflow:
 
 1. User authenticates using configured local users.
-2. UI reads configuration and output artifacts.
-3. User triggers a pipeline or reviews existing reports.
-4. UI displays comparison, vulnerability, readiness, QA, and cache metrics.
+2. `streamlit_app.py` reads active configuration and scoped output artifacts through `App/data_loaders.py`.
+3. Role-aware navigation is built by `App/navigation.py`, including QA Validation for Admin and QA Engineer roles.
+4. The selected page module renders its UI using `page_context()` for shared services and UI helpers.
+5. Page modules call `App/workflow_actions.py` for workflow side effects and service modules for focused operations.
+6. UI displays comparison, vulnerability, readiness, QA, report, cache, and audit metrics.
+
+### 6.2 Streamlit Supporting Modules
+
+| Module | Purpose | Notes |
+|---|---|---|
+| `App/data_loaders.py` | Loads JSON/text/metrics files and normalizes current, latest, comparison, vulnerability, package readiness, QA validation, and test impact data. | Keeps data shaping testable outside Streamlit pages. |
+| `App/workflow_actions.py` | Executes shared scans, role workflows, individual fetch/compare actions, email sending, and vendor compatibility resolution. | Separates side-effect actions from UI rendering. |
+| `App/workflow_ui.py` | Renders Workflow Monitor and planner/verifier status. | Admin-only navigation entry. |
+| `App/layout.py` | CSS injection, header, section title, access-denied UI, and visual helper functions. | Centralizes presentation primitives. |
+| `App/navigation.py` | Role-aware page list and sidebar rendering. | Inserts QA Validation for Admin and QA Engineer roles. |
+| `App/ui_components.py` | Shared operational tables, searchable tables, bar charts, donut charts, and readable cell styling. | Avoids repeated UI table/chart code. |
 
 ### 6.2 FastMCP Tool Server (`mcp_server.py`)
 
@@ -1038,6 +1069,17 @@ Recommended retention policy:
 - Back up SQLite or migrate to managed database for production.
 
 ## 18. Testing Strategy
+
+Recent focused coverage added for the modular UI refactor includes:
+
+- Page package import and routing smoke coverage.
+- QA signoff save/load/history behavior.
+- Input upload target path behavior for team/release release inputs.
+- Vulnerability scanner JSON parse and persisted findings behavior.
+- Page support helper output visibility behavior.
+- QA signoff permission helper behavior.
+- Navigation coverage ensuring `QA Validation` is visible for Admin and QA Engineer roles.
+
 
 Existing test coverage includes comparator, cache, notifier, Excel reporter, OpenAI wrapper, parsing, policy, Tavily integration behavior, vulnerability checker, and version fetcher.
 
