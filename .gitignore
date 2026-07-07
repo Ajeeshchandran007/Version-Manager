@@ -3,9 +3,11 @@ config.json
 output/
 releases/
 !Input/teams/
-!Input/teams/**/
-!Input/teams/**/releases/
-!Input/teams/**/releases/**/
+Input/teams/*
+!Input/teams/SourceOne/
+!Input/teams/SourceOne/**
+!Input/teams/DPS/
+!Input/teams/DPS/**
 Input/teams/**/releases/**/servers.yml
 Input/teams/**/releases/**/servers.yaml
 workspaces/
