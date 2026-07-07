@@ -16,6 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from App.assistant_chat import ROLE_ASSISTANT_PAGES, render_ai_assistant as render_assistant_chat
+from App.agent_tools import build_streamlit_agent_tools
 from App.auth import (
     ROLE_ADMIN,
     ROLE_QA_ENGINEER,
@@ -71,23 +72,18 @@ from App.workflow_runs import list_workflow_runs, record_workflow_run
 from App.user_store import DEFAULT_USER_DB, PERMISSION_QA_SIGNOFF, ROLES, delete_user, list_user_audit, list_users, set_user_active, upsert_user
 from Core.compatibility_fetcher import CompatibilityRequirementFetcher
 from Core.comparator import compare
-from Core.excel_reporter import generate_excel_report
 from Core.notifier import count_actionable_updates, get_last_email_error, is_actionable_update, send_email
 from Core.pdf_reader import PDFReader
 from Core.server_querier import ServerQuerier
-from Core.testcase_impact import save_testcase_impact_outputs
 from Core.version_fetcher import VersionFetcher
 from Core.vulnerability_checker import VulnerabilityChecker
 from Core.workspace_assessment import (
-    build_compatibility_assessment,
-    build_package_readiness,
     build_qa_validation,
 )
 from Utils.software_loader import load_software, load_software_metadata
 from Utils.utils import load_config, logger
 from Utils.version_format import canonical_version
-from agent.memory import get_run_history as read_run_history
-from agent.memory import log_audit
+from agent.context import build_release_context
 from agent.multi_agent import LangGraphVersionManager
 from mcp_server import _load_json, _resolve_current_version, _run_pipeline, _save_json, _vulnerability_path
 
@@ -772,9 +768,19 @@ def runtime_state(team: str | None = None, release: str | None = None) -> dict[s
         config = scoped_config_for_context(load_config(), team, release)
     else:
         config = active_config(load_config())
+    user = current_user()
+    release_context = build_release_context(
+        team=team or active_team_name(),
+        release=release or active_release_line(team or active_team_name()),
+        role=current_role(),
+        user=str(user.get("username") or user.get("display_name") or ""),
+        category=config.get("default_category", "ALL"),
+        output_dir=team_workspace_output_dir(team or active_team_name(), release or active_release_line(team or active_team_name())),
+    )
     return {
         "config": config,
         "scoped_config": team is not None and release is not None,
+        "release_context": release_context,
         "version_fetcher": VersionFetcher(),
         "pdf_reader": PDFReader(config),
         "server_querier": ServerQuerier(),
@@ -840,184 +846,6 @@ def record_streamlit_workflow_run(
     )
 
 
-def build_streamlit_agent_tools(state: dict[str, Any]) -> dict[str, Any]:
-    config = state["config"]
-
-    async def get_software_list(category: str = "ALL") -> dict[str, Any]:
-        software = load_software(config["input_files"]["software_yml"], category)
-        return {"category": category, "software": software}
-
-    async def query_server(software_name: str) -> dict[str, Any]:
-        result = await state["server_querier"].fetch(software_name)
-        if result:
-            result.setdefault("source", "live server")
-        return result or {"source": "live server", "error": "No version returned"}
-
-    async def extract_from_pdf(software_name: str) -> dict[str, Any]:
-        result = await state["pdf_reader"].fetch(software_name)
-        result.setdefault("source", "PDF fallback")
-        return result
-
-    async def search_latest_version(software_name: str, force_refresh: bool = False) -> dict[str, Any]:
-        return await state["version_fetcher"].fetch(software_name, force_refresh=force_refresh)
-
-    async def compare_versions(latest: dict | None = None, current: dict | None = None) -> dict[str, Any]:
-        latest = latest or {}
-        current = current or {}
-        comparison = compare(latest, current)
-        _save_json(latest, config["output_files"]["latest_version_json"])
-        _save_json(current, config["output_files"]["current_version_json"])
-        _save_json(comparison, config["output_files"]["comparison_report_json"])
-        return comparison
-
-    async def get_run_history(software_name: str, limit: int = 5) -> dict[str, Any]:
-        return {"software_name": software_name, "history": read_run_history(software_name, limit)}
-
-    async def check_vulnerabilities(
-        software_name: str,
-        version: str | None = None,
-        needs_update: bool = False,
-        force_refresh: bool = False,
-    ) -> dict[str, Any]:
-        return await state["vulnerability_checker"].check(
-            software_name,
-            version,
-            needs_update,
-            force_refresh=force_refresh,
-        )
-
-    async def save_vulnerability_report(vulnerabilities: dict) -> dict[str, Any]:
-        out = _vulnerability_path(config)
-        _save_json(vulnerabilities, out)
-        return {"saved": True, "path": str((BASE_DIR / out).resolve()), "total": len(vulnerabilities)}
-
-    async def assess_package_readiness(
-        comparison: dict | None = None,
-        latest: dict | None = None,
-        vulnerabilities: dict | None = None,
-    ) -> dict[str, Any]:
-        readiness = build_package_readiness(comparison or {}, latest or {}, vulnerabilities or {})
-        out = config["output_files"].get("package_readiness_json", "output/package_readiness.json")
-        _save_json(readiness, out)
-        return {
-            "saved": True,
-            "path": str((BASE_DIR / out).resolve()),
-            "total": len(readiness),
-            "package_readiness": readiness,
-        }
-
-    async def save_package_readiness(package_readiness: dict) -> dict[str, Any]:
-        out = config["output_files"].get("package_readiness_json", "output/package_readiness.json")
-        _save_json(package_readiness, out)
-        return {"saved": True, "path": str((BASE_DIR / out).resolve()), "total": len(package_readiness)}
-
-    async def check_compatibility(
-        comparison: dict | None = None,
-        package_readiness: dict | None = None,
-    ) -> dict[str, Any]:
-        metadata = load_software_metadata(config["input_files"]["software_yml"], config.get("default_category", "ALL"))
-        comparison = comparison or {}
-        latest = _load_json(config["output_files"].get("latest_version_json", "output/latest_versions.json"))
-        vendor_requirements = await resolve_vendor_compatibility_requirements(comparison, latest)
-        compatibility = build_compatibility_assessment(comparison, package_readiness or {}, metadata, vendor_requirements)
-        return {"saved": True, "total": len(compatibility), "compatibility": compatibility}
-
-    async def generate_qa_validation(
-        comparison: dict | None = None,
-        package_readiness: dict | None = None,
-    ) -> dict[str, Any]:
-        metadata = load_software_metadata(config["input_files"]["software_yml"], config.get("default_category", "ALL"))
-        comparison = comparison or {}
-        latest = _load_json(config["output_files"].get("latest_version_json", "output/latest_versions.json"))
-        vendor_requirements = await resolve_vendor_compatibility_requirements(comparison, latest)
-        qa_validation = build_qa_validation(comparison, package_readiness or {}, metadata, vendor_requirements)
-        out = config["output_files"].get("qa_validation_json", "output/qa_validation.json")
-        _save_json(qa_validation, out)
-        return {
-            "saved": True,
-            "path": str((BASE_DIR / out).resolve()),
-            "total": len(qa_validation),
-            "qa_validation": qa_validation,
-        }
-
-    async def save_qa_validation(qa_validation: dict) -> dict[str, Any]:
-        out = config["output_files"].get("qa_validation_json", "output/qa_validation.json")
-        _save_json(qa_validation, out)
-        return {"saved": True, "path": str((BASE_DIR / out).resolve()), "total": len(qa_validation)}
-
-    async def generate_testcase_impact(comparison: dict | None = None) -> dict[str, Any]:
-        comparison = comparison or _load_json(config["output_files"]["comparison_report_json"])
-        impact = save_testcase_impact_outputs(
-            comparison,
-            str(project_path(config["input_files"].get("testcase_repository_xlsx", "Input/testcaseRepository.xlsx"))),
-            str(project_path(config["output_files"].get("testcase_impact_json", "output/testcase_impact.json"))),
-            str(project_path(config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx"))),
-        )
-        return {
-            "saved": True,
-            "path": str(project_path(config["output_files"].get("testcase_impact_json", "output/testcase_impact.json"))),
-            "excel_path": str(project_path(config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx"))),
-            "summary": impact.get("summary", {}),
-            "testcase_impact": impact,
-        }
-
-    async def generate_excel_assessment() -> dict[str, Any]:
-        comparison = _load_json(config["output_files"]["comparison_report_json"])
-        vulnerability_path = _vulnerability_path(config)
-        vulnerabilities = _load_json(vulnerability_path) if Path(BASE_DIR / vulnerability_path).exists() else {}
-        excel_path = BASE_DIR / config["output_files"].get("excel_assessment", "output/Software_Version_Assessment.xlsx")
-        generate_excel_report(comparison, vulnerabilities, str(excel_path))
-        return {"saved": True, "path": str(excel_path)}
-
-    async def send_notification(report: dict | None = None) -> dict[str, Any]:
-        comparison = _load_json(config["output_files"]["comparison_report_json"])
-        vulnerability_path = _vulnerability_path(config)
-        vulnerabilities = _load_json(vulnerability_path) if Path(BASE_DIR / vulnerability_path).exists() else {}
-        body, html_body = prepare_email_report_files(comparison, vulnerabilities)
-        actionable_updates = count_actionable_updates(comparison, vulnerabilities)
-        unknown = [name for name, result in comparison.items() if result.get("unknown")]
-        subject = (
-            f"{actionable_updates} software update(s) needed"
-            if actionable_updates else (
-                f"{len(unknown)} software version status unknown"
-                if unknown else "All software versions are up to date"
-            )
-        )
-        attachments = qa_report_attachments(config)
-        sent = send_email(subject, body, html_body=html_body, attachments=attachments)
-        return {
-            "sent": sent,
-            "subject": subject,
-            "attachments": [path.name for path in attachments],
-            "error": get_last_email_error(),
-        }
-
-    async def log_audit_event(step: str, details: dict | None = None) -> dict[str, Any]:
-        run_id = (details or {}).get("run_id", "streamlit")
-        log_audit(run_id, step, "streamlit", details or {})
-        return {"logged": True, "run_id": run_id, "step": step}
-
-    return {
-        "get_software_list": get_software_list,
-        "query_server": query_server,
-        "extract_from_pdf": extract_from_pdf,
-        "search_latest_version": search_latest_version,
-        "compare_versions": compare_versions,
-        "get_run_history": get_run_history,
-        "check_vulnerabilities": check_vulnerabilities,
-        "save_vulnerability_report": save_vulnerability_report,
-        "assess_package_readiness": assess_package_readiness,
-        "save_package_readiness": save_package_readiness,
-        "check_compatibility": check_compatibility,
-        "generate_qa_validation": generate_qa_validation,
-        "save_qa_validation": save_qa_validation,
-        "generate_testcase_impact": generate_testcase_impact,
-        "generate_excel_assessment": generate_excel_assessment,
-        "send_notification": send_notification,
-        "log_audit_event": log_audit_event,
-    }
-
-
 async def trigger_full_pipeline(
     category: str,
     force_refresh: bool,
@@ -1038,7 +866,10 @@ async def trigger_full_pipeline(
             owner=workflow_owner(),
         ):
             state = runtime_state(workflow_team, workflow_release)
-            workflow = LangGraphVersionManager(build_streamlit_agent_tools(state))
+            workflow = LangGraphVersionManager(
+                build_streamlit_agent_tools(state, resolve_vendor_compatibility_requirements),
+                release_context=state.get("release_context"),
+            )
             final_state = await workflow.run(
                 "Run the full software version, security, package readiness, compatibility, QA validation, and reporting workflow.",
                 category=category,

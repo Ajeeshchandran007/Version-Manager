@@ -13,6 +13,9 @@ from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER, curren
 from App.qa_signoff import load_qa_signoff
 from App.workspace import WORKSPACES_DIR, active_output_path, active_release_line, active_team_name
 from Utils.utils import load_config, logger
+from agent.context import build_release_context, context_from_app
+from agent.planner import AssistantPlanner
+from agent.verifier import append_verification_note, verify_assistant_response
 
 
 ROLE_ASSISTANT_PAGES = {
@@ -352,6 +355,7 @@ def build_assistant_context(
         "role": role,
         "team": active_team_name(),
         "release": active_release_line(),
+        "output_dir": str(active_output_path("__placeholder__").parent),
         "inventory_count": len(current_df),
     }
     if not comparison_df.empty:
@@ -592,6 +596,24 @@ def _load_signoff_for_context(team: str, release: str) -> dict[str, Any]:
 
 
 def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | None:
+    release_context = build_release_context(
+        team=active_team_name(),
+        release=active_release_line() or "",
+        role=current_role(),
+        user=str(current_user().get("username") or ""),
+        output_dir=active_output_path("__placeholder__").parent,
+    )
+    planner = AssistantPlanner(release_context)
+    qa_records = qa_df.fillna("").to_dict(orient="records") if not qa_df.empty else []
+    planned_result = planner.answer(prompt, qa_records)
+    if planned_result:
+        verification = verify_assistant_response(planned_result, release_context)
+        return {
+            "content": append_verification_note(planned_result.message, verification),
+            "source": planned_result.source or "Used app data",
+            "widget": planned_result.widget,
+        }
+
     if _tested_by_requested(prompt):
         return {
             "content": _answer_tested_by(prompt, qa_df),
@@ -753,6 +775,7 @@ def render_ai_assistant(
     title = assistant_page_name()
     role = current_role()
     app_context = build_assistant_context(current_df, comparison_df, vuln_df, readiness_df, qa_df, metrics_df)
+    release_context = context_from_app(app_context)
     qa_summary = _qa_summary(qa_df)
     signoff = _load_signoff_for_context(active_team_name(), active_release_line() or str(app_context.get("release") or ""))
     st.markdown(

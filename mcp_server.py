@@ -52,6 +52,7 @@ from Utils.utils import config_mtime, logger, load_config
 from App.workflow_runs import record_workflow_run
 from agent.memory import get_run_history as read_run_history
 from agent.memory import init_db, log_audit
+from agent.contracts import tool_result_envelope
 
 # ---------------------------------------------------------------------------
 # Path resolution — single source of truth for output_files paths
@@ -626,8 +627,27 @@ async def _scheduled_pipeline(state: dict, category: str):
 mcp = FastMCP("VersionManagerServer", lifespan=lifespan)
 
 
-def _json_response(data: dict | list) -> str:
-    return json.dumps(data, indent=2)
+def _json_response(data: dict | list, *, source: str = "Used MCP tool", message: str = "") -> str:
+    if isinstance(data, dict) and {"success", "source", "data", "paths", "errors"}.issubset(data):
+        return json.dumps(data, indent=2)
+    if isinstance(data, dict):
+        legacy = {key: value for key, value in data.items() if key not in {"success", "source", "message", "data", "paths", "errors", "source_type"}}
+        payload = tool_result_envelope(
+            source=source,
+            message=message,
+            data=data,
+            source_type="mcp_tool",
+            **legacy,
+        )
+    else:
+        payload = tool_result_envelope(
+            source=source,
+            message=message,
+            data={"items": data},
+            source_type="mcp_tool",
+            items=data,
+        )
+    return json.dumps(payload, indent=2)
 
 
 async def _resolve_vendor_compatibility_requirements(
