@@ -14,6 +14,7 @@ def pages_for_role(
     base_pages: list[str],
     release_pages: list[str],
     qa_pages: list[str],
+    cache_pages: list[str],
     role_assistant_pages: dict[str, str],
     admin_pages: list[str],
     action_roles: set[str],
@@ -31,6 +32,9 @@ def pages_for_role(
         for page in reversed(qa_pages):
             if page not in pages:
                 pages.insert(insert_at, page)
+    for page in reversed(cache_pages):
+        if page not in pages:
+            pages.append(page)
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
         operations_index = pages.index("Operations") + 1 if "Operations" in pages else len(pages)
         pages.insert(operations_index, workflow_monitor_page)

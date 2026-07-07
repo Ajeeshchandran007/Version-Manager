@@ -57,6 +57,7 @@ class PageRefactorTests(unittest.TestCase):
             "base_pages": base_pages,
             "release_pages": ["Package Readiness"],
             "qa_pages": ["QA Validation"],
+            "cache_pages": ["Cache Analytics"],
             "role_assistant_pages": ROLE_ASSISTANT_PAGES,
             "admin_pages": ["Audit Logs", "Admin User Management", "Settings"],
             "action_roles": {ROLE_ADMIN, ROLE_RELEASE_ENGINEER, ROLE_QA_ENGINEER},
@@ -71,6 +72,12 @@ class PageRefactorTests(unittest.TestCase):
         self.assertIn("QA Validation", admin_pages)
         self.assertNotIn("QA Validation", release_pages)
         self.assertLess(qa_pages.index("QA Validation"), qa_pages.index("QA Assistant"))
+        self.assertIn("Cache Analytics", qa_pages)
+        self.assertIn("Cache Analytics", admin_pages)
+        self.assertIn("Cache Analytics", release_pages)
+        self.assertGreater(qa_pages.index("Cache Analytics"), qa_pages.index("Reports"))
+        self.assertGreater(admin_pages.index("Cache Analytics"), admin_pages.index("Reports"))
+        self.assertGreater(release_pages.index("Cache Analytics"), release_pages.index("Reports"))
 
     def test_qa_signoff_save_load_and_history_record(self):
         qa_df = pd.DataFrame(
@@ -117,7 +124,7 @@ class PageRefactorTests(unittest.TestCase):
                 "sample_version.pdf": b"%PDF-1.4",
                 "testcaseRepository.xlsx": b"xlsx",
             }
-            with patch("App.pages.admin.BASE_DIR", base_dir):
+            with patch("App.pages.input_upload.BASE_DIR", base_dir):
                 ok, message, saved_paths = save_uploaded_release_inputs("Source One", "7.2.11", files)
 
             target_dir = base_dir / "Input" / "teams" / "Source-One" / "releases" / "7.2.11"

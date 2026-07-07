@@ -107,6 +107,7 @@ BASE_PAGES = [
 ]
 WORKFLOW_MONITOR_PAGE = "Workflow Monitor"
 SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
+CACHE_PAGES = ["Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
 ADMIN_PAGES = ["Audit Logs", "Admin User Management", "Settings"]
@@ -403,6 +404,7 @@ def main() -> None:
         base_pages=BASE_PAGES,
         release_pages=RELEASE_PAGES,
         qa_pages=QA_PAGES,
+        cache_pages=CACHE_PAGES,
         role_assistant_pages=ROLE_ASSISTANT_PAGES,
         admin_pages=ADMIN_PAGES,
         action_roles=ACTION_ROLES,
