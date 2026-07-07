@@ -59,6 +59,7 @@ class PageRefactorTests(unittest.TestCase):
             "base_pages": base_pages,
             "release_pages": ["Package Readiness"],
             "qa_pages": ["QA Validation"],
+            "security_pages": ["Vulnerability Assessment"],
             "cache_pages": ["Cache Analytics"],
             "role_assistant_pages": ROLE_ASSISTANT_PAGES,
             "admin_pages": ["Audit Logs", "Admin User Management", "Settings"],
@@ -73,6 +74,9 @@ class PageRefactorTests(unittest.TestCase):
         self.assertIn("QA Validation", qa_pages)
         self.assertIn("QA Validation", admin_pages)
         self.assertNotIn("QA Validation", release_pages)
+        self.assertIn("Vulnerability Assessment", admin_pages)
+        self.assertIn("Vulnerability Assessment", release_pages)
+        self.assertNotIn("Vulnerability Assessment", qa_pages)
         self.assertLess(qa_pages.index("QA Validation"), qa_pages.index("QA Assistant"))
         self.assertIn("Cache Analytics", qa_pages)
         self.assertIn("Cache Analytics", admin_pages)

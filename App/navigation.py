@@ -14,6 +14,7 @@ def pages_for_role(
     base_pages: list[str],
     release_pages: list[str],
     qa_pages: list[str],
+    security_pages: list[str],
     cache_pages: list[str],
     role_assistant_pages: dict[str, str],
     admin_pages: list[str],
@@ -30,6 +31,11 @@ def pages_for_role(
     if role in {ROLE_ADMIN, ROLE_QA_ENGINEER}:
         insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
         for page in reversed(qa_pages):
+            if page not in pages:
+                pages.insert(insert_at, page)
+    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+        insert_at = pages.index("Reports") if "Reports" in pages else len(pages)
+        for page in reversed(security_pages):
             if page not in pages:
                 pages.insert(insert_at, page)
     for page in reversed(cache_pages):

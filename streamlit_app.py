@@ -404,6 +404,7 @@ def main() -> None:
         base_pages=BASE_PAGES,
         release_pages=RELEASE_PAGES,
         qa_pages=QA_PAGES,
+        security_pages=SECURITY_PAGES,
         cache_pages=CACHE_PAGES,
         role_assistant_pages=ROLE_ASSISTANT_PAGES,
         admin_pages=ADMIN_PAGES,
