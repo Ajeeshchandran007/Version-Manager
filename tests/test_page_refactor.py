@@ -178,7 +178,7 @@ class PageRefactorTests(unittest.TestCase):
             inventory_source_label("OpenSSL", "live server", {"OpenSSL": {"host": "server"}}),
             "Configured Server",
         )
-        self.assertEqual(inventory_source_label("OpenSSL", "live server", {}), "Previous Server Scan")
+        self.assertEqual(inventory_source_label("OpenSSL", "live server", {}), "PDF Inventory")
         self.assertEqual(inventory_source_label("OpenSSL", "PDF fallback - server unreachable", {}), "PDF Inventory")
 
     def test_qa_signoff_permission_helper_uses_role_or_permission(self):

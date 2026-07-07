@@ -223,7 +223,7 @@ def inventory_source_label(
 ) -> str:
     source_value = str(source or "").lower()
     if source_value == "live server":
-        return "Configured Server" if software_name in (server_configs or {}) else "Previous Server Scan"
+        return "Configured Server" if software_name in (server_configs or {}) else "PDF Inventory"
     return "PDF Inventory" if "pdf" in source_value or "fallback" in source_value else "Inventory Evidence"
 
 
