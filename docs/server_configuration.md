@@ -11,10 +11,6 @@ Server configuration is loaded in this order:
 1. `Input/teams/<team>/releases/<release>/servers.yml`
 2. `Input/teams/<team>/servers.yml`
 3. `Input/servers.yml`
-4. Deprecated compatibility fallback: `config.json["servers"]`
-
-The fallback exists only to avoid breaking old deployments during migration. New
-configuration should use YAML.
 
 Use `Input/servers.example.yml` as the committed template. Real release folders
 are ignored by git in this project, so active release server files can remain

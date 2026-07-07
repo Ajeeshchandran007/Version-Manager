@@ -25,7 +25,6 @@ def load_server_configs(
     *,
     team: str | None = None,
     release_line: str | None = None,
-    allow_legacy_config_fallback: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """Load SSH/HTTP server inventory from release, team, or global YAML."""
     config = config or load_config()
@@ -36,13 +35,6 @@ def load_server_configs(
         if payload:
             logger.info("Loaded server configuration from %s", path)
             return payload
-
-    if allow_legacy_config_fallback and config.get("servers"):
-        logger.warning(
-            "Using deprecated config.json servers block. Move server inventory to "
-            "Input/teams/<team>/releases/<release>/servers.yml."
-        )
-        return _normalize_server_payload(config.get("servers", {}))
 
     logger.info("No server configuration YAML found for team=%s release=%s.", resolved_team, resolved_release)
     return {}

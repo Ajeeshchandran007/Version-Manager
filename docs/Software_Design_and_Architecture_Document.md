@@ -540,7 +540,8 @@ Workflow:
 
 | Input | Format | Source | Purpose |
 |---|---|---|---|
-| `config.json` | JSON | Local configuration | API keys, schedule, SMTP, cache, users, server commands, input/output paths |
+| `config.json` | JSON | Local configuration | API keys, schedule, SMTP, cache, users, input/output paths |
+| `Input/teams/<team>/releases/<release>/servers.yml` | YAML | Release infrastructure inventory | SSH/HTTP server targets and command definitions |
 | `Input/software.yml` | YAML | Application inventory | Defines software categories and software names |
 | `Input/sample_version.pdf` | PDF | Current-state evidence | Fallback installed-version source |
 | `Input/testcaseRepository.xlsx` | XLSX | QA repository | Maps software changes to validation test cases |
@@ -1040,7 +1041,7 @@ Cache -> Json : atomic write
 
 ### 17.1 Configuration
 
-Configuration is centralized in `config.json`:
+Application runtime configuration is centralized in `config.json`:
 
 - OpenAI and Tavily model/API configuration.
 - Cron schedule and default category.
@@ -1048,7 +1049,10 @@ Configuration is centralized in `config.json`:
 - Input and output paths.
 - Vulnerability and cache settings.
 - Local authentication users and roles.
-- Server query map with SSH/HTTP command definitions.
+
+Live server inventory is intentionally externalized to YAML and loaded in this
+order: release-scoped `servers.yml`, team-scoped `servers.yml`, then global
+`Input/servers.yml`.
 
 ### 17.2 Startup
 

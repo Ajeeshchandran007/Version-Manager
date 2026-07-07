@@ -10,7 +10,7 @@ from App import server_config
 
 
 class ServerConfigTests(unittest.TestCase):
-    def test_release_scoped_yaml_wins_over_global_and_legacy_config(self):
+    def test_release_scoped_yaml_wins_over_global_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             release_root = root / "Input" / "teams" / "SourceOne" / "releases" / "7.2.11"
@@ -38,7 +38,7 @@ servers:
 
             with patch.object(server_config, "BASE_DIR", root):
                 configs = server_config.load_server_configs(
-                    {"servers": {"OpenSSL": {"host": "legacy-host"}}},
+                    {},
                     team="SourceOne",
                     release_line="7.2.11",
                 )
@@ -61,9 +61,20 @@ SQL Server 2019:
             config = {"input_files": {"software_yml": "Input/teams/DPS/releases/2.0/software.yml"}}
 
             with patch.object(server_config, "BASE_DIR", root), patch.dict(os.environ, {"SERVER_HOST": "10.1.2.3"}):
-                configs = server_config.load_server_configs(config, allow_legacy_config_fallback=False)
+                configs = server_config.load_server_configs(config)
 
             self.assertEqual(configs["SQL Server 2019"]["host"], "10.1.2.3")
+
+    def test_missing_yaml_ignores_legacy_servers_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Input").mkdir()
+            config = {"servers": {"OpenSSL": {"host": "legacy-host"}}}
+
+            with patch.object(server_config, "BASE_DIR", root):
+                configs = server_config.load_server_configs(config, team="SourceOne", release_line="7.2.11")
+
+            self.assertEqual(configs, {})
 
 
 if __name__ == "__main__":
