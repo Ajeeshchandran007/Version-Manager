@@ -903,6 +903,9 @@ async def trigger_full_pipeline(
         "workflow": "LangGraph Supervisor",
         **active_workflow_context(workflow_team, workflow_release),
         "workflow_status": final_state.get("workflow_status"),
+        "workflow_plan": final_state.get("workflow_plan", {}),
+        "verification_result": final_state.get("verification_result", {}),
+        "verification_retries": final_state.get("verification_retries", {}),
         "agent_messages": final_state.get("messages", []),
         "cache_mode": "fresh" if force_refresh else "use_cache",
         "total": len(comparison),
@@ -2068,6 +2071,7 @@ def render_operation_result(result: dict[str, Any] | None) -> None:
         cards = [
             ("Team / Product", result.get("active_team", active_team_name()), "Workflow execution context"),
             ("Release Line", result.get("active_release", active_release_line()), "Selected product version"),
+            ("Agent Verification", "Passed" if result.get("verification_result", {}).get("passed", True) else "Review", "Planner/Verifier quality gate result"),
             ("Applications Checked", result.get("total", 0), "Software records processed"),
             ("Updates Required", len(result.get("needs_update", [])), "Applications needing remediation"),
             ("Email Sent", "Yes" if result.get("email_sent") else "No", "Notification delivery status"),
@@ -2833,11 +2837,15 @@ def render_workflow(metrics_df: pd.DataFrame) -> None:
         st.info("No persisted workflow runs found for the selected team and release.")
 
     nodes = [
-        ("Supervisor Agent", "Routes request"),
+        ("Planner Agent", "Selects next required workflow step"),
         ("Discovery Agent", "Inventory collection"),
         ("Research Agent", "Latest versions"),
         ("Analysis Agent", "Version comparison"),
         ("Security Agent", "CVE assessment"),
+        ("Package Readiness Agent", "Release/package readiness"),
+        ("Compatibility Agent", "Compatibility review"),
+        ("QA Validation Agent", "QA plan and test impact"),
+        ("Verifier Agent", "Checks outputs and prevents loops"),
         ("Reporting Agent", "Reports and email"),
     ]
     st.markdown(
@@ -2851,13 +2859,49 @@ def render_workflow(metrics_df: pd.DataFrame) -> None:
     )
     st.subheader("Agent Output Summary")
     agent_rows = [
+        {"Agent": "Planner Agent", "Status": "Active", "Output Summary": "Routes workflow by missing required state outputs."},
         {"Agent": "Discovery Agent", "Status": "Completed", "Output Summary": "Current software inventory loaded."},
         {"Agent": "Research Agent", "Status": "Completed", "Output Summary": "Latest vendor release catalog generated."},
         {"Agent": "Analysis Agent", "Status": "Completed", "Output Summary": "Version compliance and update status calculated."},
         {"Agent": "Security Agent", "Status": "Completed", "Output Summary": "NVD vulnerability assessment completed."},
+        {"Agent": "Package Readiness Agent", "Status": "Completed", "Output Summary": "Package readiness output generated."},
+        {"Agent": "Compatibility Agent", "Status": "Completed", "Output Summary": "Compatibility requirements checked."},
+        {"Agent": "QA Validation Agent", "Status": "Completed", "Output Summary": "QA validation and test case impact generated."},
+        {"Agent": "Verifier Agent", "Status": "Active", "Output Summary": "Verifies expected outputs and fails closed after retry limit."},
         {"Agent": "Reporting Agent", "Status": "Completed", "Output Summary": "Excel, email preview, and notifications prepared."},
     ]
     st.dataframe(style_operational_table(pd.DataFrame(agent_rows)), use_container_width=True, hide_index=True)
+
+    if run_rows:
+        latest_summary = run_rows[0].get("summary", {}) if isinstance(run_rows[0].get("summary", {}), dict) else {}
+        workflow_plan = latest_summary.get("workflow_plan", {})
+        verification = latest_summary.get("verification_result", {})
+        retries = latest_summary.get("verification_retries", {})
+        if workflow_plan or verification:
+            st.subheader("Planner / Verifier Check")
+            check_rows = [
+                {
+                    "Check": "Latest Planner Decision",
+                    "Result": workflow_plan.get("next_agent", "Completed"),
+                    "Details": workflow_plan.get("reason", "All required workflow outputs are present."),
+                },
+                {
+                    "Check": "Verifier Status",
+                    "Result": "Passed" if verification.get("passed", True) else "Review Required",
+                    "Details": verification.get("reason", "Specialist outputs verified."),
+                },
+                {
+                    "Check": "Missing Outputs",
+                    "Result": ", ".join(verification.get("missing_outputs", []) or []) or "None",
+                    "Details": "Fields expected by the verifier for the last specialist step.",
+                },
+                {
+                    "Check": "Retry Counts",
+                    "Result": str(retries or {}),
+                    "Details": "Bounded retry counter; prevents infinite routing loops.",
+                },
+            ]
+            st.dataframe(style_operational_table(pd.DataFrame(check_rows)), use_container_width=True, hide_index=True)
 
     st.subheader("Pipeline Performance")
     performance_df = build_performance_metrics(metrics_df)
