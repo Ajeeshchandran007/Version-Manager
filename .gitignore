@@ -2,6 +2,12 @@
 config.json
 output/
 releases/
+!Input/teams/
+!Input/teams/**/
+!Input/teams/**/releases/
+!Input/teams/**/releases/**/
+Input/teams/**/releases/**/servers.yml
+Input/teams/**/releases/**/servers.yaml
 workspaces/
 *.log
 __pycache__/

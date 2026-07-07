@@ -1,0 +1,45 @@
+Package:
+  - name: HCL Notes
+    current_requirements:
+      os: Windows 10/11
+      database_version: HCL Domino server
+      browser_version: Microsoft Edge
+      architecture: x64
+  - name: OutLook 2019
+    current_requirements:
+      os: Windows 10/11
+      database_version: Exchange/Microsoft 365 mailbox
+      browser_version: Microsoft Edge
+      architecture: x64
+  - name: ElasticSearch
+    current_requirements:
+      os: Linux/Windows Server
+      database_version: Elasticsearch cluster/index compatibility
+      browser_version: Microsoft Edge/Chrome for Kibana
+      architecture: x64
+  - name: edge
+    current_requirements:
+      os: Windows 10/11
+      browser_version: Microsoft Edge
+      architecture: x64
+  - name: Altova XMLSpy Pro
+    current_requirements:
+      os: Windows 10/11
+      architecture: x64
+  - name: 7-Zip
+    current_requirements:
+      os: Windows 10/11
+      architecture: x64
+  - name: Acrobat Reader DC
+    current_requirements:
+      os: Windows 10/11
+      architecture: x64
+  - name: FileZilla
+    current_requirements:
+      os: Windows 10/11
+      architecture: x64
+  - name: FreeMind/Freeplane
+    current_requirements:
+      os: Windows 10/11
+      java_version: JRE/JDK as packaged or required by application
+      architecture: x64
