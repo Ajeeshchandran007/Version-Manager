@@ -1,0 +1,7 @@
+servers:
+  Example Software:
+    host: example.internal
+    method: ssh
+    user: service-account
+    password: ${SSH_PASSWORD}
+    command: example --version

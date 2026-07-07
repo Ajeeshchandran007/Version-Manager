@@ -58,35 +58,5 @@
                                      ],
                       "role":  "Admin"
                   }
-              ],
-    "servers":  {
-                    "SQL Server 2019":  {
-                                            "host":  "192.168.1.13",
-                                            "method":  "ssh",
-                                            "user":  "es1service",
-                                            "password":  "${SSH_PASSWORD}",
-                                            "command":  "sqlcmd -Q \"SELECT @@VERSION\" -h -1"
-                                        },
-                    "MS Exchange Server 2019":  {
-                                                    "host":  "192.168.2.11",
-                                                    "method":  "ssh",
-                                                    "user":  "es1service",
-                                                    "password":  "${SSH_PASSWORD}",
-                                                    "command":  "powershell -Command \"Get-Command exsetup | % {$_.Fileversioninfo.ProductVersion}\""
-                                                },
-                    "libCurl":  {
-                                    "host":  "192.168.2.5",
-                                    "method":  "ssh",
-                                    "user":  "es1service",
-                                    "password":  "${SSH_PASSWORD}",
-                                    "command":  "curl --version"
-                                },
-                    "OpenSSL":  {
-                                    "host":  "192.168.2.5",
-                                    "method":  "ssh",
-                                    "user":  "es1service",
-                                    "password":  "${SSH_PASSWORD}",
-                                    "command":  "openssl version"
-                                }
-                }
+              ]
 }

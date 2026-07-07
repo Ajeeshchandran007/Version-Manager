@@ -9,14 +9,21 @@ import json
 import asyncio
 import httpx
 import paramiko
+from App.server_config import load_server_configs
 from Utils.utils import logger, load_config
 from Utils.version_format import canonical_version
 
 
 class ServerQuerier:
-    def __init__(self):
-        config = load_config()
-        self.server_configs: dict = config.get("servers", {})
+    def __init__(
+        self,
+        config: dict | None = None,
+        *,
+        team: str | None = None,
+        release_line: str | None = None,
+    ):
+        config = config or load_config()
+        self.server_configs: dict = load_server_configs(config, team=team, release_line=release_line)
 
     async def fetch(self, software_name: str) -> dict | None:
         """

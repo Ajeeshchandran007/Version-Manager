@@ -95,7 +95,11 @@ def runtime_state(team: str | None = None, release: str | None = None) -> dict[s
         "release_context": release_context,
         "version_fetcher": VersionFetcher(),
         "pdf_reader": PDFReader(config),
-        "server_querier": ServerQuerier(),
+        "server_querier": ServerQuerier(
+            config,
+            team=team or active_team_name(),
+            release_line=release or active_release_line(team or active_team_name()),
+        ),
         "vulnerability_checker": VulnerabilityChecker(),
     }
 

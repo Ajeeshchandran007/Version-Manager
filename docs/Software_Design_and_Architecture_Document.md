@@ -419,9 +419,9 @@ Workflow:
 | Attribute | Description |
 |---|---|
 | Purpose | Discovers installed software versions from live infrastructure. |
-| Responsibilities | Load server configuration, execute SSH commands, call HTTP APIs, parse software-specific versions. |
+| Responsibilities | Load release/team/global server YAML through `App/server_config.py`, execute SSH commands, call HTTP APIs, parse software-specific versions. |
 | Technologies | Paramiko, httpx, asyncio threads, regex. |
-| Inputs | Software name and server configuration. |
+| Inputs | Software name and server configuration from `Input/teams/<team>/releases/<release>/servers.yml`, `Input/teams/<team>/servers.yml`, or `Input/servers.yml`. |
 | Outputs | Current version dictionary with `source: live server`. |
 | Integrations | Enterprise Linux/Windows servers, HTTP endpoints. |
 | Communication | SSH command execution or HTTP GET. |

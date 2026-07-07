@@ -7,6 +7,7 @@ from Core.pdf_reader import PDFReader
 from Core.comparator import compare as _compare_fn
 from Core.notifier import build_html_report, build_report, send_email
 from Utils.software_loader import load_software
+from App.server_config import load_server_configs
 from agent.agent import VersionManagerAgent
 from agent.memory import init_db, log_audit, log_failure, save_run_result, get_run_history, get_recent_failures
 
@@ -26,7 +27,7 @@ async def main():
     async def query_server(software_name):
         result = await querier.fetch(software_name)
         if result is None:
-            server_cfg = config.get("servers", {}).get(software_name, {})
+            server_cfg = load_server_configs(config).get(software_name, {})
             log_failure(
                 software_name,
                 server_cfg.get("host"),
