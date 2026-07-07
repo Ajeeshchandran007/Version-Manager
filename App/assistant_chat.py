@@ -431,7 +431,21 @@ def _qa_widget_requested(prompt: str) -> bool:
 
 def _recommended_testcase_requested(prompt: str) -> bool:
     prompt_lower = prompt.lower()
-    return "test case" in prompt_lower and any(term in prompt_lower for term in ("recommend", "recommended", "how many", "count", "total"))
+    test_terms = ("test case", "testcase", "test coverage", "coverage")
+    action_terms = (
+        "recommend",
+        "recommended",
+        "how many",
+        "count",
+        "total",
+        "no coverage",
+        "no testcase coverage",
+        "no test case coverage",
+        "without coverage",
+        "not covered",
+        "missing coverage",
+    )
+    return any(term in prompt_lower for term in test_terms) and any(term in prompt_lower for term in action_terms)
 
 
 def _current_release_requested(prompt: str) -> bool:
@@ -456,7 +470,9 @@ def _tested_by_requested(prompt: str) -> bool:
 
 def _latest_version_requested(prompt: str) -> bool:
     prompt_lower = prompt.lower()
-    return any(term in prompt_lower for term in ("latest version", "latest build", "current latest", "newest version"))
+    return any(term in prompt_lower for term in ("latest version", "latest build", "current latest", "newest version")) or (
+        "latest" in prompt_lower and "version" in prompt_lower
+    )
 
 
 def _current_version_requested(prompt: str) -> bool:
@@ -464,6 +480,57 @@ def _current_version_requested(prompt: str) -> bool:
     if _latest_version_requested(prompt):
         return False
     return any(term in prompt_lower for term in ("current version", "installed version", "existing version", "deployed version"))
+
+
+def _package_readiness_requested(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(
+        term in prompt_lower
+        for term in (
+            "package readiness",
+            "package ready",
+            "packaging readiness",
+            "ready for package",
+            "ready for packaging",
+            "ready to package",
+            "package blocker",
+            "packaging blocker",
+            "blocked package",
+            "blocked packaging",
+        )
+    )
+
+
+def _internal_package_prompt(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    context_terms = ("sourceone", "dps", "release", "package", "packaging", active_team_name().lower(), active_release_line().lower())
+    return _package_readiness_requested(prompt) or (
+        any(term in prompt_lower for term in ("ready", "blocked", "status"))
+        and any(term for term in context_terms if term and term in prompt_lower)
+        and any(term in prompt_lower for term in ("package", "packaging"))
+    )
+
+
+def _vulnerability_requested(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(term in prompt_lower for term in ("vulnerability", "vulnerabilities", "cve", "security risk", "security assessment", "risk level"))
+
+
+def _reports_requested(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(
+        term in prompt_lower
+        for term in (
+            "available report",
+            "reports available",
+            "reports are available",
+            "what reports",
+            "output files",
+            "generated files",
+            "download report",
+            "report status",
+        )
+    )
 
 
 def _match_software_name(prompt: str, candidates: list[str]) -> str:
@@ -498,7 +565,7 @@ def _answer_latest_from_outputs(prompt: str) -> dict[str, str] | None:
     candidates = sorted({*latest.keys(), *comparison.keys()})
     software = _match_software_name(prompt, candidates)
     if not software:
-        return None
+        return _answer_latest_summary_from_outputs(latest, latest_path, comparison, comparison_path)
 
     record = latest.get(software) if isinstance(latest.get(software), dict) else {}
     if not record and isinstance(comparison.get(software), dict):
@@ -513,6 +580,39 @@ def _answer_latest_from_outputs(prompt: str) -> dict[str, str] | None:
     message = f"For **{team} / {release}**, the latest version of **{software}** in generated output is **{version}**."
     if cu and str(cu).lower() not in {"not found", "none", "null"}:
         message += f" CU: **{cu}**."
+    if source_path:
+        message += f"\n\nSource: `{source_path}`"
+    return {"content": message, "source": "Used MCP tool: Latest Version Output", "widget": ""}
+
+
+def _answer_latest_summary_from_outputs(
+    latest: dict[str, Any],
+    latest_path: str,
+    comparison: dict[str, Any],
+    comparison_path: str,
+) -> dict[str, str] | None:
+    rows: list[str] = []
+    source_path = latest_path or comparison_path
+    records = latest if latest else {
+        name: record.get("latest", {})
+        for name, record in comparison.items()
+        if isinstance(record, dict) and isinstance(record.get("latest"), dict)
+    }
+    for name, record in list(records.items())[:12]:
+        if not isinstance(record, dict):
+            continue
+        version = _first_value(record, "Build Version", "version", "Latest Version")
+        cu = _first_value(record, "Cumulative Update (CU)", "cu", "Latest CU")
+        if not version:
+            continue
+        suffix = f" ({cu})" if cu and cu.lower() not in {"not found", "none", "null"} else ""
+        rows.append(f"- **{name}**: {version}{suffix}")
+    if not rows:
+        return None
+    team, release = _context_label_from_output_path(source_path)
+    message = f"Latest software versions available in generated output for **{team} / {release}**:\n\n" + "\n".join(rows)
+    if len(records) > len(rows):
+        message += f"\n\nShowing {len(rows)} of {len(records)} software item(s)."
     if source_path:
         message += f"\n\nSource: `{source_path}`"
     return {"content": message, "source": "Used MCP tool: Latest Version Output", "widget": ""}
@@ -547,6 +647,155 @@ def _answer_current_from_outputs(prompt: str) -> dict[str, str] | None:
     if source_path:
         message += f"\n\nSource: `{source_path}`"
     return {"content": message, "source": "Used MCP tool: Current Version Output", "widget": ""}
+
+
+def _answer_package_readiness_from_outputs(prompt: str) -> dict[str, str] | None:
+    if not _package_readiness_requested(prompt):
+        return None
+    if current_role() == ROLE_QA_ENGINEER:
+        return _deny_package_readiness_for_qa()
+    readiness, source_path = _load_best_output_json("package_readiness.json", prompt)
+    if not readiness:
+        return None
+
+    candidates = sorted(str(name) for name in readiness.keys())
+    software = _match_software_name(prompt, candidates)
+    team, release = _context_label_from_output_path(source_path)
+    if software and isinstance(readiness.get(software), dict):
+        record = readiness[software]
+        status = _first_value(record, "Package Readiness", "status") or "Not Assessed"
+        impact = _first_value(record, "Upgrade Impact", "impact") or "Not recorded"
+        blocker = _first_value(record, "Blocker", "blocker")
+        owner = _first_value(record, "Owner", "owner") or "Application Owner"
+        message = (
+            f"For **{team} / {release}**, package readiness for **{software}** is **{status}**.\n\n"
+            f"- **Upgrade impact**: {impact}\n"
+            f"- **Owner**: {owner}"
+        )
+        if blocker:
+            message += f"\n- **Blocker**: {blocker}"
+    else:
+        counts: dict[str, int] = {}
+        blockers: list[str] = []
+        for name, record in readiness.items():
+            if not isinstance(record, dict):
+                continue
+            status = _first_value(record, "Package Readiness", "status") or "Not Assessed"
+            counts[status] = counts.get(status, 0) + 1
+            blocker = _first_value(record, "Blocker", "blocker")
+            if blocker:
+                blockers.append(str(name))
+        rows = "\n".join(f"- **{status}**: {count}" for status, count in sorted(counts.items()))
+        message = f"Package readiness summary for **{team} / {release}**:\n\n{rows or '- No readiness statuses recorded.'}"
+        if blockers:
+            message += "\n\nBlocked or review-needed software:\n" + "\n".join(f"- **{name}**" for name in blockers[:10])
+    if source_path:
+        message += f"\n\nSource: `{source_path}`"
+    return {"content": message, "source": "Used MCP tool: Package Readiness", "widget": ""}
+
+
+def _deny_package_readiness_for_qa() -> dict[str, str]:
+    return {
+        "content": (
+            "Package readiness is owned by Release Assistant and is not available in QA Assistant.\n\n"
+            "In QA Assistant, I can help with QA validation, testcase coverage, signoff readiness, compatibility checks, "
+            "current/latest versions, tester details, and QA reports."
+        ),
+        "source": "Access guardrail: QA role",
+        "widget": "",
+    }
+
+
+def _answer_missing_package_readiness(prompt: str) -> dict[str, str] | None:
+    if not _package_readiness_requested(prompt):
+        return None
+    if current_role() == ROLE_QA_ENGINEER:
+        return _deny_package_readiness_for_qa()
+    team = active_team_name()
+    release = active_release_line(team)
+    return {
+        "content": (
+            f"No package readiness output is available for **{team} / {release}**. "
+            "Run the release workflow or ask Release Assistant to generate package readiness before I answer packaging status from project evidence."
+        ),
+        "source": "Used MCP tool: Package Readiness",
+        "widget": "",
+    }
+
+
+def _answer_vulnerability_from_outputs(prompt: str) -> dict[str, str] | None:
+    if not _vulnerability_requested(prompt):
+        return None
+    vulnerabilities, source_path = _load_best_output_json("vulnerability_report.json", prompt)
+    if not vulnerabilities:
+        return None
+
+    candidates = sorted(str(name) for name in vulnerabilities.keys())
+    software = _match_software_name(prompt, candidates)
+    team, release = _context_label_from_output_path(source_path)
+    if software and isinstance(vulnerabilities.get(software), dict):
+        record = vulnerabilities[software]
+        risk = _first_value(record, "risk_level", "Risk Level") or "UNKNOWN"
+        severity = _first_value(record, "severity", "CVE Severity") or "UNKNOWN"
+        cves = record.get("cves") if isinstance(record.get("cves"), list) else []
+        assessment = _first_value(record, "assessment", "Security Assessment") or "No assessment recorded."
+        message = (
+            f"For **{team} / {release}**, vulnerability posture for **{software}** is **{risk.upper()}** risk "
+            f"with **{severity.upper()}** highest severity and **{len(cves)} CVE(s)**.\n\n{assessment}"
+        )
+    else:
+        risk_counts: dict[str, int] = {}
+        total_cves = 0
+        high_items: list[str] = []
+        for name, record in vulnerabilities.items():
+            if not isinstance(record, dict):
+                continue
+            risk = (_first_value(record, "risk_level", "Risk Level") or "UNKNOWN").upper()
+            risk_counts[risk] = risk_counts.get(risk, 0) + 1
+            cves = record.get("cves") if isinstance(record.get("cves"), list) else []
+            total_cves += len(cves)
+            if risk in {"CRITICAL", "HIGH"}:
+                high_items.append(str(name))
+        order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"]
+        rows = "\n".join(f"- **{risk}**: {risk_counts[risk]}" for risk in order if risk in risk_counts)
+        message = f"Vulnerability assessment summary for **{team} / {release}**:\n\n{rows or '- No risk levels recorded.'}\n\nTotal CVEs: **{total_cves}**."
+        if high_items:
+            message += "\n\nHigh-priority security review queue:\n" + "\n".join(f"- **{name}**" for name in high_items[:10])
+    if source_path:
+        message += f"\n\nSource: `{source_path}`"
+    return {"content": message, "source": "Used MCP tool: Vulnerability Assessment", "widget": ""}
+
+
+def _answer_reports_from_outputs(prompt: str) -> dict[str, str] | None:
+    if not _reports_requested(prompt):
+        return None
+    output_dir = active_output_path("__placeholder__").parent
+    report_files = [
+        ("Latest Versions", output_dir / "latest_versions.json"),
+        ("Current Versions", output_dir / "current_versions.json"),
+        ("Version Comparison", output_dir / "comparison_report.json"),
+        ("Vulnerability Report", output_dir / "vulnerability_report.json"),
+        ("Package Readiness", output_dir / "package_readiness.json"),
+        ("QA Validation", output_dir / "qa_validation.json"),
+        ("Test Case Impact", output_dir / "testcase_impact.json"),
+        ("Excel Assessment", output_dir / "Software_Version_Assessment.xlsx"),
+        ("Test Case Impact Excel", output_dir / "Test_Case_Impact_Assessment.xlsx"),
+    ]
+    available = [(label, path) for label, path in report_files if path.exists()]
+    team = active_team_name()
+    release = active_release_line(team)
+    if not available:
+        return {
+            "content": f"No generated report files are available yet for **{team} / {release}**. Run the workflow to create release outputs.",
+            "source": "Used MCP tool: Release Reports",
+            "widget": "",
+        }
+    rows = "\n".join(f"- **{label}**: `{path}`" for label, path in available)
+    return {
+        "content": f"Generated report files available for **{team} / {release}**:\n\n{rows}",
+        "source": "Used MCP tool: Release Reports",
+        "widget": "",
+    }
 
 
 def _first_value(record: dict[str, Any], *keys: str) -> str:
@@ -763,6 +1012,24 @@ def _answer_recommended_testcases(prompt: str) -> str:
     requiring_update = int(summary.get("software_requiring_update") or 0)
     with_coverage = int(summary.get("software_with_test_coverage") or 0)
     without_coverage = int(summary.get("software_without_test_coverage") or 0)
+    prompt_lower = prompt.lower()
+    if any(term in prompt_lower for term in ("no coverage", "no testcase coverage", "no test case coverage", "without coverage", "not covered", "missing coverage")):
+        impacted = impact.get("impacted_software") if isinstance(impact.get("impacted_software"), dict) else {}
+        uncovered = [
+            name
+            for name, record in impacted.items()
+            if isinstance(record, dict) and int(record.get("Test Case Count") or 0) == 0
+        ]
+        if uncovered:
+            rows = "\n".join(f"- **{name}**" for name in uncovered[:20])
+            return (
+                f"For the current release, **{without_coverage} software item(s)** do not have mapped testcase coverage:\n\n"
+                f"{rows}\n\nSource: `{source_path}`"
+            )
+        return (
+            f"All **{with_coverage} software item(s)** requiring QA review have mapped testcase coverage. "
+            f"No uncovered software is listed in the generated Test Case Impact output.\n\nSource: `{source_path}`"
+        )
     return (
         f"The current release has **{total} recommended QA test cases** mapped from the test case repository.\n\n"
         f"{requiring_update} software item(s) require update review. "
@@ -834,6 +1101,24 @@ def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | Non
         user=str(current_user().get("username") or ""),
         output_dir=active_output_path("__placeholder__").parent,
     )
+    if _recommended_testcase_requested(prompt):
+        return {
+            "content": _answer_recommended_testcases(prompt),
+            "source": "Used MCP tool: Test Case Impact",
+            "widget": "",
+        }
+    for answer_builder in (
+        _answer_package_readiness_from_outputs,
+        _answer_vulnerability_from_outputs,
+        _answer_reports_from_outputs,
+    ):
+        answer = answer_builder(prompt)
+        if answer:
+            return answer
+    missing_package_answer = _answer_missing_package_readiness(prompt)
+    if missing_package_answer:
+        return missing_package_answer
+
     planner = AssistantPlanner(release_context)
     qa_records = qa_df.fillna("").to_dict(orient="records") if not qa_df.empty else []
     planned_result = planner.answer(prompt, qa_records)
@@ -864,12 +1149,6 @@ def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | Non
             "source": "Used MCP tool: Release Context",
             "widget": "",
         }
-    if _recommended_testcase_requested(prompt):
-        return {
-            "content": _answer_recommended_testcases(prompt),
-            "source": "Used MCP tool: Test Case Impact",
-            "widget": "",
-        }
     if _qa_widget_requested(prompt):
         return {
             "content": "I prepared a compact QA dashboard snapshot from the current release data.",
@@ -898,6 +1177,60 @@ def _web_search_answer(prompt: str) -> tuple[dict[str, str] | None, str]:
     if not content:
         return None, "Web search did not return usable results."
     return {"content": content, "source": "Used web search", "widget": ""}, ""
+
+
+def _web_search_allowed(prompt: str) -> tuple[bool, str]:
+    prompt_lower = prompt.lower()
+    normalized_prompt = _normalize_lookup_text(prompt_lower)
+    if _internal_package_prompt(prompt):
+        return (
+            False,
+            "Web search skipped by guardrail. Package readiness is internal release data, so I only answer it from generated project outputs.",
+        )
+
+    known_software = _software_names_from_inputs_and_outputs()
+    if _match_software_name(prompt, known_software):
+        return True, ""
+
+    team = str(active_team_name() or "").lower()
+    release = str(active_release_line() or "").lower()
+    if (team and team in prompt_lower) or (release and release in prompt_lower):
+        return True, ""
+
+    product_terms = (
+        "version",
+        "build",
+        "cu",
+        "cumulative update",
+        "release notes",
+        "download",
+        "patch",
+        "upgrade",
+        "compatibility",
+        "compatible",
+        "system requirement",
+        "support matrix",
+        "vulnerability",
+        "cve",
+        "security advisory",
+        "vendor",
+        "software",
+        "package",
+        "browser support",
+        "processor requirement",
+    )
+    if any(term in prompt_lower for term in product_terms):
+        return True, ""
+
+    compact = normalized_prompt.replace(" ", "")
+    if any(token in compact for token in ("openssl", "libcurl", "sqlserver", "exchange", "hcldomino", "googlechrome")):
+        return True, ""
+
+    return (
+        False,
+        "Web search skipped by guardrail. This assistant only searches the internet for product, software, release, "
+        "compatibility, vulnerability, package, or report-related questions.",
+    )
 
 
 def _format_web_search_answer(prompt: str, response: dict[str, Any]) -> str:
@@ -1148,7 +1481,8 @@ def render_ai_assistant(
                 widget = latest_research_answer.get("widget", "")
                 source = latest_research_answer.get("source", "Used MCP tool")
             else:
-                web_answer, web_unavailable_reason = _web_search_answer(prompt)
+                web_allowed, web_guardrail_reason = _web_search_allowed(prompt)
+                web_answer, web_unavailable_reason = _web_search_answer(prompt) if web_allowed else (None, web_guardrail_reason)
                 if web_answer:
                     answer = web_answer["content"]
                     widget = web_answer.get("widget", "")

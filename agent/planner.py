@@ -187,7 +187,21 @@ def _qa_widget_requested(prompt_lower: str) -> bool:
 
 
 def _recommended_testcase_requested(prompt_lower: str) -> bool:
-    return "test case" in prompt_lower and any(term in prompt_lower for term in ("recommend", "recommended", "how many", "count", "total"))
+    test_terms = ("test case", "testcase", "test coverage", "coverage")
+    action_terms = (
+        "recommend",
+        "recommended",
+        "how many",
+        "count",
+        "total",
+        "no coverage",
+        "no testcase coverage",
+        "no test case coverage",
+        "without coverage",
+        "not covered",
+        "missing coverage",
+    )
+    return any(term in prompt_lower for term in test_terms) and any(term in prompt_lower for term in action_terms)
 
 
 def _current_release_requested(prompt_lower: str) -> bool:
