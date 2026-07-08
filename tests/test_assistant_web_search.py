@@ -112,6 +112,37 @@ class AssistantWebSearchTests(unittest.TestCase):
         self.assertEqual(answer["source"], "Used MCP tool: Latest Version Output")
         self.assertIn("8.13.0", answer["content"])
 
+    def test_specific_latest_version_question_does_not_return_summary(self):
+        def fake_load(filename, prompt):
+            if filename == "latest_versions.json":
+                return {
+                    "libCurl": {"Build Version": "8.21.0"},
+                    "OpenSSL": {"Build Version": "4.0.1"},
+                }, "latest_versions.json"
+            return {}, ""
+
+        with patch("App.assistant_chat._load_best_output_json", side_effect=fake_load), patch(
+            "App.assistant_chat.active_team_name", return_value="DPS"
+        ), patch("App.assistant_chat.active_release_line", return_value="7.2.12"):
+            answer = _answer_latest_from_outputs("libcurl latest version")
+
+        self.assertEqual(answer["source"], "Used MCP tool: Latest Version Output")
+        self.assertIn("8.21.0", answer["content"])
+        self.assertNotIn("OpenSSL", answer["content"])
+
+    def test_unknown_specific_latest_version_falls_through_to_mcp_or_web(self):
+        def fake_load(filename, prompt):
+            if filename == "latest_versions.json":
+                return {"libCurl": {"Build Version": "8.21.0"}}, "latest_versions.json"
+            return {}, ""
+
+        with patch("App.assistant_chat._load_best_output_json", side_effect=fake_load), patch(
+            "App.assistant_chat.active_team_name", return_value="DPS"
+        ), patch("App.assistant_chat.active_release_line", return_value="7.2.12"):
+            answer = _answer_latest_from_outputs("chrome latest version")
+
+        self.assertIsNone(answer)
+
     def test_latest_version_uses_exact_prompt_release_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -299,6 +330,21 @@ class AssistantWebSearchTests(unittest.TestCase):
         self.assertIn("Latest Versions", answer["content"])
         self.assertIn("QA Validation", answer["content"])
 
+    def test_release_artifacts_question_lists_generated_output_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "comparison_report.json").write_text("{}", encoding="utf-8")
+            with patch("App.assistant_chat.active_output_path", return_value=output_dir / "__placeholder__"), patch(
+                "App.assistant_chat.active_team_name", return_value="SourceOne"
+            ), patch("App.assistant_chat.active_release_line", return_value="7.2.11"):
+                with patch("App.assistant_chat.current_role", return_value="Release Engineer"), patch(
+                    "App.assistant_chat.current_user", return_value={"username": "release"}
+                ):
+                    answer = _tool_first_answer("show the release artifacts for SourceOne 7.2.11", pd.DataFrame())
+
+        self.assertEqual(answer["source"], "Used MCP tool: Release Reports")
+        self.assertIn("Version Comparison", answer["content"])
+
     def test_prompt_routing_matrix_prefers_mcp_before_web(self):
         def fake_load(filename, prompt):
             if filename == "latest_versions.json":
@@ -331,6 +377,7 @@ class AssistantWebSearchTests(unittest.TestCase):
             "OpenSSL vulnerability risk": "Used MCP tool: Vulnerability Assessment",
             "what is current release": "Used MCP tool: Release Context",
             "show QA dashboard summary": "Used MCP tool: QA Validation",
+            "show the release artifacts for SourceOne 7.2.11": "Access guardrail: QA role",
             "who is president of france": "Web search blocked",
             "intel i7 processor compatibility requirement for SourceOne 7.2.11": "Would use web search",
         }

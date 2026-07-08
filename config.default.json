@@ -48,6 +48,13 @@
     "auth":  {
                  "enabled":  true
              },
+    "assistant_router":  {
+                             "embedding_enabled":  false,
+                             "embedding_model":  "text-embedding-3-small",
+                             "embedding_threshold":  0.72,
+                             "embedding_margin":  0.06,
+                             "embedding_cache":  "output/cache/assistant_tool_embeddings.json"
+                         },
     "users":  [
                   {
                       "username":  "admin",

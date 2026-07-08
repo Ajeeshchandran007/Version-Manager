@@ -171,10 +171,12 @@ def validate_cron_expression(schedule: str) -> tuple[bool, str]:
 
 
 def save_schedule_config(schedule: str) -> dict[str, Any]:
-    if not CONFIG_FILE.exists():
-        raise FileNotFoundError(f"Config file not found: {CONFIG_FILE}")
-    config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    if CONFIG_FILE.exists():
+        config = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    else:
+        config = load_config()
     config["schedule_cron"] = schedule
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
     clear_dashboard_cache()
     return config

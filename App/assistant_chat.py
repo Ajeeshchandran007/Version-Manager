@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from html import escape
 from collections.abc import Callable
 from typing import Any
@@ -13,6 +14,8 @@ from tavily import TavilyClient
 from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER, current_role, current_user
 from App.qa_signoff import load_qa_signoff
 from App.workspace import WORKSPACES_DIR, active_config, active_output_path, active_release_line, active_team_name, team_input_software_path
+from Core.ai_governance import apply_final_governance, classify_web_search_prompt
+from Core.assistant_tool_router import ToolRouteDecision, resolve_assistant_tool
 from Core.pdf_reader import PDFReader
 from Core.server_querier import ServerQuerier
 from Core.version_fetcher import VersionFetcher
@@ -521,6 +524,10 @@ def _reports_requested(prompt: str) -> bool:
     return any(
         term in prompt_lower
         for term in (
+            "artifact",
+            "artifacts",
+            "release artifact",
+            "release artifacts",
             "available report",
             "reports available",
             "reports are available",
@@ -553,6 +560,39 @@ def _match_software_name(prompt: str, candidates: list[str]) -> str:
     return ""
 
 
+def _latest_summary_requested(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    summary_terms = (
+        "all latest",
+        "list latest",
+        "show latest",
+        "latest software versions",
+        "latest versions",
+        "software version used",
+        "software versions used",
+        "versions for this release",
+        "latest for this release",
+    )
+    return any(term in prompt_lower for term in summary_terms)
+
+
+def _specific_latest_software_query(prompt: str, candidates: list[str]) -> bool:
+    if not _latest_version_requested(prompt) or _latest_summary_requested(prompt):
+        return False
+    normalized_prompt = _normalize_lookup_text(prompt)
+    for token in ("latest", "version", "build", "newest", "current"):
+        normalized_prompt = re.sub(rf"\b{re.escape(token)}\b", " ", normalized_prompt)
+    active_team = _normalize_lookup_text(active_team_name())
+    active_release = _normalize_lookup_text(active_release_line())
+    for context_token in (active_team, active_release, "sourceone", "dps", "release", "line"):
+        if context_token:
+            normalized_prompt = normalized_prompt.replace(context_token, " ")
+    remaining_tokens = [token for token in normalized_prompt.split() if len(token) >= 3]
+    if remaining_tokens:
+        return True
+    return bool(_match_software_name(prompt, candidates))
+
+
 def _normalize_lookup_text(value: str) -> str:
     return "".join(ch.lower() if ch.isalnum() else " " for ch in str(value or "")).strip()
 
@@ -565,6 +605,8 @@ def _answer_latest_from_outputs(prompt: str) -> dict[str, str] | None:
     candidates = sorted({*latest.keys(), *comparison.keys()})
     software = _match_software_name(prompt, candidates)
     if not software:
+        if _specific_latest_software_query(prompt, candidates):
+            return None
         return _answer_latest_summary_from_outputs(latest, latest_path, comparison, comparison_path)
 
     record = latest.get(software) if isinstance(latest.get(software), dict) else {}
@@ -1101,6 +1143,10 @@ def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | Non
         user=str(current_user().get("username") or ""),
         output_dir=active_output_path("__placeholder__").parent,
     )
+    semantic_answer = _semantic_tool_answer(prompt, qa_df)
+    if semantic_answer:
+        return semantic_answer
+
     if _recommended_testcase_requested(prompt):
         return {
             "content": _answer_recommended_testcases(prompt),
@@ -1158,6 +1204,87 @@ def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | Non
     return None
 
 
+def _semantic_tool_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | None:
+    route = resolve_assistant_tool(
+        prompt,
+        role=current_role(),
+        team=active_team_name(),
+        release=active_release_line(),
+        config=load_config(),
+    )
+    if route.selected_tool and not route.allowed:
+        return {
+            "content": _semantic_denied_message(route),
+            "source": route.source_label or f"Access guardrail: {current_role()}",
+            "widget": "",
+        }
+    if not route.allowed or not route.selected_tool:
+        return None
+
+    answer = _answer_for_semantic_route(route, prompt, qa_df)
+    if answer:
+        answer.setdefault("source", route.source_label)
+        answer["routing"] = f"{route.method}:{route.confidence:.2f}"
+        return answer
+    if route.selected_tool in {"release_reports", "package_readiness", "vulnerability_assessment"}:
+        return _missing_internal_tool_answer(route)
+    return None
+
+
+def _answer_for_semantic_route(route: ToolRouteDecision, prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | None:
+    if route.selected_tool == "release_reports":
+        return _answer_reports_from_outputs(prompt)
+    if route.selected_tool == "package_readiness":
+        return _answer_package_readiness_from_outputs(prompt) or _answer_missing_package_readiness(prompt)
+    if route.selected_tool == "vulnerability_assessment":
+        return _answer_vulnerability_from_outputs(prompt)
+    if route.selected_tool == "testcase_impact":
+        return {"content": _answer_recommended_testcases(prompt), "source": "Used MCP tool: Test Case Impact", "widget": ""}
+    if route.selected_tool == "current_version":
+        return _answer_current_from_outputs(prompt)
+    if route.selected_tool == "latest_version":
+        return _answer_latest_from_outputs(prompt)
+    if route.selected_tool == "release_context":
+        return {"content": _answer_current_release(prompt), "source": "Used MCP tool: Release Context", "widget": ""}
+    if route.selected_tool == "qa_validation":
+        if _tested_by_requested(prompt):
+            return {"content": _answer_tested_by(prompt, qa_df), "source": "Used MCP tool: QA Tester Details", "widget": ""}
+        return {
+            "content": "I prepared a compact QA dashboard snapshot from the current release data.",
+            "source": "Used MCP tool: QA Validation",
+            "widget": "qa_dashboard",
+        }
+    return None
+
+
+def _semantic_denied_message(route: ToolRouteDecision) -> str:
+    if route.selected_tool == "package_readiness" and current_role() == ROLE_QA_ENGINEER:
+        return _deny_package_readiness_for_qa()["content"]
+    if route.selected_tool == "release_reports" and current_role() == ROLE_QA_ENGINEER:
+        return (
+            "Generic release artifacts are owned by Release Assistant and are not available in QA Assistant.\n\n"
+            "In QA Assistant, I can help with QA validation artifacts, testcase impact, signoff readiness, "
+            "compatibility checks, tester details, and QA reports."
+        )
+    return route.denied_reason or f"This request is not available for {current_role()}."
+
+
+def _missing_internal_tool_answer(route: ToolRouteDecision) -> dict[str, str]:
+    team = active_team_name()
+    release = active_release_line(team)
+    labels = {
+        "release_reports": "release artifacts or report files",
+        "package_readiness": "package readiness output",
+        "vulnerability_assessment": "vulnerability assessment output",
+    }
+    label = labels.get(route.selected_tool, "generated output")
+    return {
+        "content": f"No {label} is available for **{team} / {release}**. Run the relevant workflow to generate this evidence before I answer from project data.",
+        "source": route.source_label or "Used MCP tool",
+        "widget": "",
+    }
+
+
 def _web_search_answer(prompt: str) -> tuple[dict[str, str] | None, str]:
     config = load_config()
     api_key = str(config.get("tavily_api_key") or "").strip()
@@ -1180,57 +1307,15 @@ def _web_search_answer(prompt: str) -> tuple[dict[str, str] | None, str]:
 
 
 def _web_search_allowed(prompt: str) -> tuple[bool, str]:
-    prompt_lower = prompt.lower()
-    normalized_prompt = _normalize_lookup_text(prompt_lower)
-    if _internal_package_prompt(prompt):
-        return (
-            False,
-            "Web search skipped by guardrail. Package readiness is internal release data, so I only answer it from generated project outputs.",
-        )
-
-    known_software = _software_names_from_inputs_and_outputs()
-    if _match_software_name(prompt, known_software):
-        return True, ""
-
-    team = str(active_team_name() or "").lower()
-    release = str(active_release_line() or "").lower()
-    if (team and team in prompt_lower) or (release and release in prompt_lower):
-        return True, ""
-
-    product_terms = (
-        "version",
-        "build",
-        "cu",
-        "cumulative update",
-        "release notes",
-        "download",
-        "patch",
-        "upgrade",
-        "compatibility",
-        "compatible",
-        "system requirement",
-        "support matrix",
-        "vulnerability",
-        "cve",
-        "security advisory",
-        "vendor",
-        "software",
-        "package",
-        "browser support",
-        "processor requirement",
+    decision = classify_web_search_prompt(
+        prompt,
+        team=active_team_name(),
+        release=active_release_line(),
+        known_software=_software_names_from_inputs_and_outputs(),
     )
-    if any(term in prompt_lower for term in product_terms):
+    if decision.allowed:
         return True, ""
-
-    compact = normalized_prompt.replace(" ", "")
-    if any(token in compact for token in ("openssl", "libcurl", "sqlserver", "exchange", "hcldomino", "googlechrome")):
-        return True, ""
-
-    return (
-        False,
-        "Web search skipped by guardrail. This assistant only searches the internet for product, software, release, "
-        "compatibility, vulnerability, package, or report-related questions.",
-    )
+    return False, f"Web search skipped by guardrail. {decision.reason}"
 
 
 def _format_web_search_answer(prompt: str, response: dict[str, Any]) -> str:
@@ -1482,11 +1567,15 @@ def render_ai_assistant(
                 source = latest_research_answer.get("source", "Used MCP tool")
             else:
                 web_allowed, web_guardrail_reason = _web_search_allowed(prompt)
-                web_answer, web_unavailable_reason = _web_search_answer(prompt) if web_allowed else (None, web_guardrail_reason)
+                web_answer, web_unavailable_reason = _web_search_answer(prompt) if web_allowed else (None, "")
                 if web_answer:
                     answer = web_answer["content"]
                     widget = web_answer.get("widget", "")
                     source = web_answer.get("source", "Used web search")
+                elif not web_allowed:
+                    answer = web_guardrail_reason
+                    widget = ""
+                    source = "Access guardrail: Web search"
                 else:
                     with st.spinner("Thinking..."):
                         try:
@@ -1501,6 +1590,24 @@ def render_ai_assistant(
                             answer = f"The assistant could not answer right now: {exc}"
                     widget = ""
                     source = "Used AI fallback"
+    answer, source, governance_verification = apply_final_governance(
+        prompt=prompt,
+        content=answer,
+        source=source,
+        role=role,
+        team=active_team_name(),
+        release=active_release_line(),
+    )
+    logger.info(
+        "Assistant governance route user=%s role=%s team=%s release=%s source=%s passed=%s warnings=%s",
+        current_user().get("username", "user"),
+        role,
+        active_team_name(),
+        active_release_line(),
+        source,
+        governance_verification.passed,
+        governance_verification.warnings,
+    )
     st.session_state[history_key].append(
         {
             "role": "assistant",

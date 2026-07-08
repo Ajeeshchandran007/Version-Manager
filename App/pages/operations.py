@@ -109,7 +109,7 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     with save_col1:
         save_clicked = st.button("Save Automatic Schedule", disabled=not valid_cron, use_container_width=True)
     with save_col2:
-        st.caption("Saving updates config.json and applies the schedule to this dashboard background scheduler while the dashboard is running.")
+        st.caption("Saving updates the runtime schedule configuration and applies it to this dashboard background scheduler while the dashboard is running.")
     if save_clicked:
         try:
             ctx.save_schedule_config(selected_cron)
