@@ -1433,6 +1433,41 @@ def _render_message(
         _render_qa_dashboard_widget(qa_summary, app_context, signoff)
 
 
+def _assistant_empty_state_copy(role: str) -> dict[str, Any]:
+    if role == ROLE_ADMIN:
+        return {
+            "description": (
+                "The assistant can summarize release readiness, version status, package status, "
+                "security risks, blockers, and report status."
+            ),
+            "suggestions": [
+                "Show release dashboard summary",
+                "What needs admin attention?",
+                "Are there any blockers?",
+            ],
+        }
+    if role == ROLE_RELEASE_ENGINEER:
+        return {
+            "description": (
+                "The assistant can summarize release readiness, version drift, package status, "
+                "blockers, security risks, and report status."
+            ),
+            "suggestions": [
+                "Show release readiness summary",
+                "What packages are blocked?",
+                "What updates need action?",
+            ],
+        }
+    return {
+        "description": "The assistant can summarize QA readiness, impacted tests, blockers, and signoff status.",
+        "suggestions": [
+            "Show QA dashboard summary",
+            "What should QA focus on?",
+            "Is this ready for signoff?",
+        ],
+    }
+
+
 async def ask_assistant(messages: list[dict[str, str]], app_context: dict[str, Any]) -> str:
     config = load_config()
     api_key = str(config.get("openai_api_key") or "").strip()
@@ -1516,15 +1551,18 @@ def render_ai_assistant(
     st.markdown("</div>", unsafe_allow_html=True)
 
     if not st.session_state[history_key]:
+        empty_state = _assistant_empty_state_copy(role)
+        suggestions = "".join(
+            f'<span class="vm-claude-suggestion">{escape(suggestion)}</span>'
+            for suggestion in empty_state["suggestions"]
+        )
         st.markdown(
-            """
+            f"""
             <div class="vm-claude-empty">
                 <strong>Ask about the current release in plain language.</strong><br>
-                The assistant can summarize QA readiness, version drift, impacted tests, blockers, and report status.
+                {escape(empty_state["description"])}
                 <div class="vm-claude-suggestions">
-                    <span class="vm-claude-suggestion">Show QA dashboard summary</span>
-                    <span class="vm-claude-suggestion">What should QA focus on?</span>
-                    <span class="vm-claude-suggestion">Is this ready for signoff?</span>
+                    {suggestions}
                 </div>
             </div>
             """,
