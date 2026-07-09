@@ -41,7 +41,7 @@ def pages_for_role(
     for page in reversed(cache_pages):
         if page not in pages:
             pages.append(page)
-    if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
+    if role == ROLE_ADMIN:
         operations_index = pages.index("Operations") + 1 if "Operations" in pages else len(pages)
         pages.insert(operations_index, workflow_monitor_page)
     assistant_page = role_assistant_pages.get(role, "AI Assistant")
