@@ -65,14 +65,14 @@ def render_sidebar(
         user = current_user()
         active_team = active_team_name()
         active_release = active_release_line(active_team)
-        st.markdown("### Version Manager")
+        st.markdown("### Enterprise Product Release AI Advisory Platform")
         st.caption("Software posture and remediation operations")
         st.markdown(
             f"""
             <div class="vm-sidebar-card">
                 <div class="vm-sidebar-kv">Signed In<strong>{user.get("display_name", user.get("username", "Unknown"))}</strong></div>
                 <div class="vm-sidebar-kv">Role<strong>{current_role()}</strong></div>
-                <div class="vm-sidebar-kv">Project<strong>Version Manager</strong></div>
+                <div class="vm-sidebar-kv">Project<strong>Enterprise Product Release AI Advisory Platform</strong></div>
                 <div class="vm-sidebar-kv">Team<strong>{active_team}</strong></div>
                 <div class="vm-sidebar-kv">Release Line<strong>{active_release}</strong></div>
                 <div class="vm-sidebar-kv">Scope<strong>Version and Security Assessment</strong></div>

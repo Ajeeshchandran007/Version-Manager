@@ -523,7 +523,7 @@ def render_app_header(page: str, workflow_status: str, last_scan: str) -> None:
         f"""
         <div class="vm-shell-header">
             <div>
-                <h1>Version Manager Command Center</h1>
+                <h1>Enterprise Product Release AI Advisory Platform</h1>
                 <p>{page} · Software version, vulnerability, and reporting operations</p>
             </div>
             <div class="vm-header-actions">

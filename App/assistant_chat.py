@@ -1417,7 +1417,7 @@ def _render_message(
     source: str = "",
 ) -> None:
     safe_content = escape(content).replace("\n", "<br>")
-    label_text = escape(source or "Version Manager")
+    label_text = escape(source or "Enterprise Product Release AI Advisory Platform")
     label = f"<div class='vm-claude-answer-label'>{label_text}</div>" if role == "assistant" else ""
     st.markdown(
         f"""
@@ -1445,7 +1445,7 @@ async def ask_assistant(messages: list[dict[str, str]], app_context: dict[str, A
         ROLE_QA_ENGINEER: "Do not reveal admin-only workflow monitor, audit details, or package-owner-only operational details. Focus on QA validation, test impact, signoff readiness, versions, and reports.",
     }
     system_prompt = (
-        "You are the Version Manager in-app assistant. Answer using the provided application context. "
+        "You are the Enterprise Product Release AI Advisory Platform in-app assistant. Answer using the provided application context. "
         "Use a calm Claude-style tone: short paragraphs, no bulky report dumps, and no long lists unless the user asks for details. "
         "Be concise, practical, and explicit when data is missing. Never claim you ran a workflow or changed data. "
         "For action requests, explain the next UI step and say confirmation is required before any action. "
@@ -1487,7 +1487,7 @@ def render_ai_assistant(
         f"""
         <div class="vm-claude-page">
             <div class="vm-claude-topbar">
-                <h2 class="vm-claude-title">{active_team_name() or "Version Manager"} {title}<span>v</span></h2>
+                <h2 class="vm-claude-title">{active_team_name() or "Enterprise Product Release AI Advisory Platform"} {title}<span>v</span></h2>
                 <div class="vm-claude-badges">
                     <span class="vm-claude-badge">Read-only</span>
                     <span class="vm-claude-badge">{role}</span>

@@ -238,9 +238,9 @@ def require_login(
             st.markdown(
                 """
                 <div class="vm-login-wrap">
-                    <div class="vm-login-brand">Version Manager</div>
+                    <div class="vm-login-brand">Enterprise Product Release AI Advisory Platform</div>
                     <div class="vm-login-subtitle">
-                        Sign in to access software version monitoring, vulnerability assessment, reports, and operational controls.
+                        Monitoring Version Updates, Vulnerability Tracking, QA and Package/ Build recommendation, Executive Reporting
                     </div>
                     <div class="vm-login-meta">
                         <span class="vm-chip">Enterprise Access</span>

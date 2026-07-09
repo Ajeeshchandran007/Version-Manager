@@ -133,7 +133,7 @@ RISK_COLORS = {
 
 
 st.set_page_config(
-    page_title="Version Manager",
+    page_title="Enterprise Product Release AI Advisory Platform",
     page_icon="VM",
     layout="wide",
     initial_sidebar_state="expanded",
