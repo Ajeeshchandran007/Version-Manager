@@ -40,16 +40,23 @@ class AssistantToolRouterTests(unittest.TestCase):
         self.assertEqual(decision.source_label, "Access guardrail: QA role")
 
     def test_semantic_route_allows_release_package_readiness(self):
-        decision = resolve_assistant_tool(
+        prompts = (
             "which packages are blocked",
-            role="Release Engineer",
-            team="SourceOne",
-            release="7.2.11",
-            config={},
+            "what checklist is pending",
+            "show pending package checklist",
         )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                decision = resolve_assistant_tool(
+                    prompt,
+                    role="Release Engineer",
+                    team="SourceOne",
+                    release="7.2.11",
+                    config={},
+                )
 
-        self.assertTrue(decision.allowed)
-        self.assertEqual(decision.selected_tool, "package_readiness")
+                self.assertTrue(decision.allowed)
+                self.assertEqual(decision.selected_tool, "package_readiness")
 
     def test_embedding_route_is_optional_and_cached_path_configurable(self):
         config = {

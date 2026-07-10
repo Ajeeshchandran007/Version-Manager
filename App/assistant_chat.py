@@ -500,14 +500,22 @@ def _package_readiness_requested(prompt: str) -> bool:
             "packaging blocker",
             "blocked package",
             "blocked packaging",
+            "package checklist",
+            "pending checklist",
+            "checklist pending",
+            "checklist is pending",
         )
-    )
+    ) or ("checklist" in prompt_lower and "pending" in prompt_lower)
 
 
 def _internal_package_prompt(prompt: str) -> bool:
     prompt_lower = prompt.lower()
     context_terms = ("sourceone", "dps", "release", "package", "packaging", active_team_name().lower(), active_release_line().lower())
+    checklist_terms = ("checklist", "pending steps", "remaining steps", "next steps")
     return _package_readiness_requested(prompt) or (
+        any(term in prompt_lower for term in checklist_terms)
+        and any(term for term in context_terms if term and term in prompt_lower)
+    ) or (
         any(term in prompt_lower for term in ("ready", "blocked", "status"))
         and any(term for term in context_terms if term and term in prompt_lower)
         and any(term in prompt_lower for term in ("package", "packaging"))
@@ -718,7 +726,7 @@ def _answer_package_readiness_from_outputs(prompt: str) -> dict[str, str] | None
             message += f"\n- **Blocker**: {blocker}"
     else:
         counts: dict[str, int] = {}
-        blockers: list[str] = []
+        blockers: list[tuple[str, str]] = []
         for name, record in readiness.items():
             if not isinstance(record, dict):
                 continue
@@ -726,11 +734,13 @@ def _answer_package_readiness_from_outputs(prompt: str) -> dict[str, str] | None
             counts[status] = counts.get(status, 0) + 1
             blocker = _first_value(record, "Blocker", "blocker")
             if blocker:
-                blockers.append(str(name))
+                blockers.append((str(name), str(blocker)))
         rows = "\n".join(f"- **{status}**: {count}" for status, count in sorted(counts.items()))
         message = f"Package readiness summary for **{team} / {release}**:\n\n{rows or '- No readiness statuses recorded.'}"
         if blockers:
-            message += "\n\nBlocked or review-needed software:\n" + "\n".join(f"- **{name}**" for name in blockers[:10])
+            message += "\n\nBlocked or review-needed software:\n" + "\n".join(
+                f"- **{name}**: {blocker}" for name, blocker in blockers[:10]
+            )
     if source_path:
         message += f"\n\nSource: `{source_path}`"
     return {"content": message, "source": "Used MCP tool: Package Readiness", "widget": ""}

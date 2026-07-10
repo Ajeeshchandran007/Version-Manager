@@ -282,6 +282,32 @@ class AssistantWebSearchTests(unittest.TestCase):
         self.assertIn("Blocked", answer["content"])
         self.assertIn("Vendor installer validation pending", answer["content"])
 
+    def test_release_pending_checklist_uses_package_readiness_before_web_search(self):
+        def fake_load(filename, prompt):
+            if filename == "package_readiness.json":
+                return {
+                    "libCurl": {
+                        "Package Readiness": "Vendor Patch Available",
+                        "Upgrade Impact": "High",
+                        "Owner": "Release Team",
+                        "Blocker": "Checksum, signature, test install, rollback validation, and approval pending",
+                    }
+                }, "package_readiness.json"
+            return {}, ""
+
+        with patch("App.assistant_chat._load_best_output_json", side_effect=fake_load), patch(
+            "App.assistant_chat.active_team_name", return_value="SourceOne"
+        ), patch("App.assistant_chat.active_release_line", return_value="7.2.11"), patch(
+            "App.assistant_chat.current_role", return_value="Release Engineer"
+        ), patch("App.assistant_chat.current_user", return_value={"username": "release"}), patch(
+            "App.assistant_chat.active_output_path", return_value=Path("output")
+        ):
+            answer = _tool_first_answer("What checklist is pending?", pd.DataFrame())
+
+        self.assertEqual(answer["source"], "Used MCP tool: Package Readiness")
+        self.assertIn("Vendor Patch Available", answer["content"])
+        self.assertIn("approval pending", answer["content"])
+
     def test_qa_package_readiness_is_denied_before_web_search(self):
         with patch("App.assistant_chat._load_best_output_json", return_value=({}, "")), patch(
             "App.assistant_chat.active_team_name", return_value="SourceOne"
