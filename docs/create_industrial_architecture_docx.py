@@ -97,8 +97,8 @@ def arrow(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int, int
         draw_wrapped(draw, label, label_box, fill=BLACK, fnt=F_TINY)
 
 
-def base_canvas(title: str, subtitle: str = "") -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    img = Image.new("RGB", (1800, 1100), WHITE)
+def base_canvas(title: str, subtitle: str = "", height: int = 1100) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    img = Image.new("RGB", (1800, height), WHITE)
     draw = ImageDraw.Draw(img)
     draw.rectangle((0, 0, 1800, 88), fill=NAVY)
     draw.text((42, 22), title, fill=WHITE, font=F_TITLE)
@@ -156,13 +156,68 @@ def system_context() -> Path:
 
 
 def logical_architecture() -> Path:
-    img, d = base_canvas("Logical Component Architecture", "Layered design with MCP tools, agents, services, data, and integrations")
+    img, d = base_canvas("Logical Component Architecture", "Layered design with MCP tools, agents, services, data, and integrations", height=1300)
     layers = [
-        (90, 150, 1710, 275, "Presentation and Clients", LIGHT_GREEN, GREEN, ["Streamlit UI", "Claude MCP Host", "CLI Runner"]),
-        (90, 315, 1710, 460, "Tool and Orchestration Layer", LIGHT_BLUE, BLUE, ["FastMCP Server", "APScheduler", "LangGraph Workflow", "ReAct Agent"]),
-        (90, 510, 1710, 690, "Core Domain Services", LIGHT_ORANGE, ORANGE, ["VersionFetcher", "ServerQuerier", "PDFReader", "Comparator", "VulnerabilityChecker", "ExcelReporter", "Notifier"]),
-        (90, 745, 1710, 885, "Persistence and Configuration", LIGHT_GRAY, GRAY, ["config.json", "software.yml", "SQLite Memory", "JSON Reports", "JSON Cache"]),
-        (90, 930, 1710, 1040, "External Integrations", LIGHT_RED, RED, ["OpenAI", "Tavily", "NVD", "SSH/HTTP Servers", "SMTP"]),
+        (
+            90,
+            140,
+            1710,
+            265,
+            "Presentation, Access, and Clients",
+            LIGHT_GREEN,
+            GREEN,
+            ["Streamlit UI", "Role Navigation", "Auth / RBAC", "Claude MCP Host", "Codex / CLI Runner"],
+        ),
+        (
+            90,
+            305,
+            1710,
+            465,
+            "Tool, Assistant, and Orchestration Layer",
+            LIGHT_BLUE,
+            BLUE,
+            ["FastMCP Server", "App Tool Layer", "Assistant Router", "AI Governance", "LangGraph Workflow", "Planner / Verifier", "APScheduler"],
+        ),
+        (
+            90,
+            515,
+            1710,
+            700,
+            "Agent and Workflow Services",
+            LIGHT_ORANGE,
+            ORANGE,
+            ["Discovery", "Research", "Analysis", "Security", "Package Readiness", "Compatibility", "QA Validation", "Reporting"],
+        ),
+        (
+            90,
+            745,
+            1710,
+            905,
+            "Core Domain Services",
+            LIGHT_ORANGE,
+            ORANGE,
+            ["Version\nFetcher", "Server\nQuerier", "PDF\nReader", "Comparator", "Vulnerability\nChecker", "Workspace\nAssessment", "Testcase\nImpact", "Excel\nReporter", "Notifier"],
+        ),
+        (
+            90,
+            945,
+            1710,
+            1085,
+            "Persistence, Configuration, and Evidence",
+            LIGHT_GRAY,
+            GRAY,
+            ["config.json", "software.yml", "PDF/XLSX Inputs", "User Store", "SQLite Memory", "Workflow Runs / Locks", "JSON Reports", "JSON Cache"],
+        ),
+        (
+            90,
+            1125,
+            1710,
+            1235,
+            "External Integrations",
+            LIGHT_RED,
+            RED,
+            ["OpenAI", "Tavily", "NVD", "SSH/HTTP Servers", "SMTP"],
+        ),
     ]
     centers = []
     for x1, y1, x2, y2, title, fill, outline, items in layers:
@@ -172,8 +227,8 @@ def logical_architecture() -> Path:
         for i, item in enumerate(items):
             bx1 = x1 + 30 + i * gap
             bx2 = bx1 + gap - 22
-            by1 = y1 + 58
-            by2 = y2 - 18
+            by1 = y1 + 56
+            by2 = y2 - 16
             box(d, (bx1, by1, bx2, by2), item, WHITE, outline)
             row_centers.append(((bx1 + bx2) // 2, (by1 + by2) // 2))
         centers.append(row_centers)
