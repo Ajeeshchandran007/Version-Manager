@@ -42,7 +42,7 @@ from App.data_loaders import (
 from App.formatting import format_duration_ms, format_epoch_ts, format_ts
 from App.layout import inject_css, render_access_denied, render_app_header, section_title
 from App.navigation import pages_for_role, render_sidebar
-from App.ui_components import bar_chart, searchable_table, style_operational_table
+from App.ui_components import bar_chart, donut_chart, searchable_table, style_operational_table
 from App.workflow_actions import (
     app_state_db_path,
     run_async,
@@ -245,6 +245,7 @@ def page_context() -> SimpleNamespace:
         compliance_score=compliance_score,
         configured_inventory_from_active_software_yml=configured_inventory_from_active_software_yml,
         describe_cron=describe_cron,
+        donut_chart=donut_chart,
         file_mtime=file_mtime,
         format_duration_ms=format_duration_ms,
         format_epoch_ts=format_epoch_ts,
