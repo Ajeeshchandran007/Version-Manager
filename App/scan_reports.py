@@ -162,6 +162,18 @@ def resolve_current_vulnerability_evidence(
     intelligence_available: bool,
     nvd_available: bool,
 ) -> dict[str, Any]:
+    release_reports = discover_release_reports(release_input_dir, output_dir)
+    if release_reports:
+        selected = release_reports[0]
+        return {
+            "active_source": "Release Scanner Report",
+            "trust_level": "High",
+            "source_priority": 1,
+            "fallback_used": False,
+            "source_file": str(selected),
+            "release_reports": [str(path) for path in release_reports],
+            "message": "Using scanner evidence found in the selected release folder.",
+        }
     metadata = load_vulnerability_evidence_metadata(output_dir)
     if metadata and intelligence_available:
         return metadata

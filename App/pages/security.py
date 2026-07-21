@@ -139,7 +139,10 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
 
     with st.expander("Advanced: Evidence Ingestion", expanded=False):
         st.info("EPRA can auto-discover scanner reports from the release reports folder. Manual CSV/JSON/XLSX upload is only an optional fallback.")
-        st.caption(f"EPRA checks for scanner reports under `{release_input_dir / 'reports'}` and `{output_dir / 'reports'}`.")
+        st.caption(
+            f"EPRA checks `{release_input_dir}` and `{output_dir}` for `reports`, `report`, "
+            "`scan_reports`, and `scanner_reports` folders."
+        )
         release_reports = evidence_source.get("release_reports", []) or []
         if release_reports:
             st.write("Discovered release report(s):")
