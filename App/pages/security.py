@@ -143,6 +143,29 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                 }
             )
             st.dataframe(ctx.style_operational_table(display_df), use_container_width=True, hide_index=True)
+            if package_readiness:
+                finding_names = {str(name).lower() for name in intel_df.get("software_name", pd.Series(dtype=str)).dropna()}
+                coverage_rows = []
+                for software, record in package_readiness.items():
+                    if not isinstance(record, dict):
+                        continue
+                    matched = str(software).lower() in finding_names
+                    blocker = str(record.get("Blocker") or "").strip()
+                    coverage_rows.append(
+                        {
+                            "Software": record.get("Software Name") or software,
+                            "Scanner Evidence": "Finding present" if matched else "No scanner finding",
+                            "Security Impact": "See vulnerability finding" if matched else "No CVE reported by active scanner evidence",
+                            "Package Readiness": record.get("Package Readiness", "Not Assessed"),
+                            "Owner": record.get("Owner", "Not Assigned"),
+                            "Package Blocker": blocker or "None",
+                        }
+                    )
+                if coverage_rows:
+                    st.subheader("Release Package Vulnerability Coverage")
+                    st.caption("Shows all packages in Package Readiness, including software with no CVE in the active scanner evidence.")
+                    coverage_df = pd.DataFrame(coverage_rows).sort_values(["Scanner Evidence", "Software"])
+                    st.dataframe(ctx.style_operational_table(coverage_df), use_container_width=True, hide_index=True)
 
     if parsed_scan_findings:
         st.subheader("Uploaded Scanner Findings")
