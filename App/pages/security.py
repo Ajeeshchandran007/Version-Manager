@@ -31,6 +31,9 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
     release_input_dir = team_input_software_path(team, release).parent
     parsed_scan_findings = load_parsed_scan_findings(output_dir)
     vulnerability_intelligence = load_vulnerability_intelligence(output_dir)
+    comparison = ctx.load_json(str(output_dir / "comparison_report.json"), ctx.file_mtime(output_dir / "comparison_report.json"))
+    package_readiness = ctx.load_json(str(output_dir / "package_readiness.json"), ctx.file_mtime(output_dir / "package_readiness.json"))
+    qa_validation = ctx.load_json(str(output_dir / "qa_validation.json"), ctx.file_mtime(output_dir / "qa_validation.json"))
     evidence_source = resolve_current_vulnerability_evidence(
         release_input_dir,
         output_dir,
@@ -61,9 +64,6 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
             st.info("No release scanner report was discovered for the selected release.")
         if st.button("Load Release Scanner Report", use_container_width=True, disabled=not release_reports):
             try:
-                comparison = ctx.load_json(str(output_dir / "comparison_report.json"), ctx.file_mtime(output_dir / "comparison_report.json"))
-                package_readiness = ctx.load_json(str(output_dir / "package_readiness.json"), ctx.file_mtime(output_dir / "package_readiness.json"))
-                qa_validation = ctx.load_json(str(output_dir / "qa_validation.json"), ctx.file_mtime(output_dir / "qa_validation.json"))
                 intelligence, selected = build_from_release_report_if_available(
                     release_input_dir,
                     output_dir,
@@ -88,9 +88,6 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                 saved_path = save_uploaded_scan_report(output_dir, scan_file)
                 findings = parse_scan_report(saved_path)
                 save_parsed_scan_findings(output_dir, findings)
-                comparison = ctx.load_json(str(output_dir / "comparison_report.json"), ctx.file_mtime(output_dir / "comparison_report.json"))
-                package_readiness = ctx.load_json(str(output_dir / "package_readiness.json"), ctx.file_mtime(output_dir / "package_readiness.json"))
-                qa_validation = ctx.load_json(str(output_dir / "qa_validation.json"), ctx.file_mtime(output_dir / "qa_validation.json"))
                 build_and_save_vulnerability_intelligence(
                     output_dir,
                     findings,
