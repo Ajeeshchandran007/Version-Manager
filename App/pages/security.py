@@ -98,27 +98,43 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
             )
             st.dataframe(ctx.style_operational_table(display_df), use_container_width=True, hide_index=True)
             if package_readiness:
-                finding_names = {str(name).lower() for name in intel_df.get("software_name", pd.Series(dtype=str)).dropna()}
+                finding_lookup = {
+                    str(row.get("software_name", "")).lower(): row
+                    for row in intel_df.to_dict("records")
+                    if row.get("software_name")
+                }
                 coverage_rows = []
                 for software, record in package_readiness.items():
                     if not isinstance(record, dict):
                         continue
-                    matched = str(software).lower() in finding_names
+                    finding = finding_lookup.get(str(software).lower(), {})
+                    matched = bool(finding)
                     blocker = str(record.get("Blocker") or "").strip()
+                    decision = finding.get("blocker_decision") or "No scanner CVE"
+                    risk_score = finding.get("release_risk_score") if matched else "N/A"
+                    evidence_status = "Scanner finding mapped" if matched else "No CVE in active scanner evidence"
+                    if matched:
+                        next_action = finding.get("recommended_action", "Review vulnerability finding with package owner.")
+                    elif blocker:
+                        next_action = "Continue package readiness blocker resolution; no scanner CVE is mapped to this package."
+                    else:
+                        next_action = "Continue normal package readiness workflow."
                     coverage_rows.append(
                         {
                             "Software": record.get("Software Name") or software,
-                            "Scanner Evidence": "Finding present" if matched else "No scanner finding",
-                            "Security Impact": "See vulnerability finding" if matched else "No CVE reported by active scanner evidence",
+                            "Vulnerability Evidence Status": evidence_status,
+                            "Release Security Decision": decision,
+                            "Risk Score": risk_score,
                             "Package Readiness": record.get("Package Readiness", "Not Assessed"),
                             "Owner": record.get("Owner", "Not Assigned"),
                             "Package Blocker": blocker or "None",
+                            "Next Action": next_action,
                         }
                     )
                 if coverage_rows:
                     st.subheader("Release Package Vulnerability Coverage")
-                    st.caption("Shows all packages in Package Readiness, including software with no CVE in the active scanner evidence.")
-                    coverage_df = pd.DataFrame(coverage_rows).sort_values(["Scanner Evidence", "Software"])
+                    st.caption("Shows release packages mapped against active scanner evidence, so missing CVE evidence is explicit and not confused with a vulnerability finding.")
+                    coverage_df = pd.DataFrame(coverage_rows).sort_values(["Release Security Decision", "Software"])
                     st.dataframe(ctx.style_operational_table(coverage_df), use_container_width=True, hide_index=True)
 
     with st.expander("Advanced: Evidence Ingestion", expanded=False):
