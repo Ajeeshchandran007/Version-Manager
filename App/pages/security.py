@@ -113,19 +113,36 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
         risk_cols[1].metric("Release Blockers", summary.get("release_blockers", 0))
         risk_cols[2].metric("Critical", summary.get("severity_counts", {}).get("CRITICAL", 0))
         risk_cols[3].metric("High", summary.get("severity_counts", {}).get("HIGH", 0))
+        st.caption("Release Risk Score is a 0-100 EPRA score based on severity, CVSS, exploitability, EPSS, package readiness, QA status, and fixed-version evidence.")
         intel_df = pd.DataFrame(vulnerability_intelligence.get("findings", []))
         if not intel_df.empty:
+            if "risk_reasons" in intel_df.columns:
+                intel_df["risk_reasons"] = intel_df["risk_reasons"].apply(lambda value: "; ".join(value) if isinstance(value, list) else value)
             display_cols = [
                 "software_name",
                 "cve",
                 "severity",
                 "release_risk_score",
                 "blocker_decision",
+                "risk_reasons",
                 "package_readiness",
                 "qa_result",
                 "recommended_action",
             ]
-            st.dataframe(ctx.style_operational_table(intel_df[[col for col in display_cols if col in intel_df.columns]]), use_container_width=True, hide_index=True)
+            display_df = intel_df[[col for col in display_cols if col in intel_df.columns]].rename(
+                columns={
+                    "software_name": "Software",
+                    "cve": "CVE",
+                    "severity": "Severity",
+                    "release_risk_score": "Release Risk Score (0-100)",
+                    "blocker_decision": "Decision",
+                    "risk_reasons": "Why This Score",
+                    "package_readiness": "Package Readiness",
+                    "qa_result": "QA Result",
+                    "recommended_action": "Recommended Action",
+                }
+            )
+            st.dataframe(ctx.style_operational_table(display_df), use_container_width=True, hide_index=True)
 
     if parsed_scan_findings:
         st.subheader("Uploaded Scanner Findings")
