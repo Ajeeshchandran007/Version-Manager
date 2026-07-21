@@ -1,0 +1,4 @@
+Software Name,Version,CVE,Severity,CVSS Score,Fixed Version,Scanner Source,Exploit Available,EPSS Score,Description
+OpenSSL,3.0.13,CVE-2026-10001,HIGH,8.1,3.0.15,Release Nexus Report,true,0.72,TLS certificate validation vulnerability requires security review.
+libCurl,8.13.0,CVE-2026-10002,CRITICAL,9.4,8.14.1,Release Nexus Report,true,0.81,Remote code execution risk in HTTP client dependency.
+SQL Server 2019,CU14,CVE-2026-10003,MEDIUM,6.5,CU15,Release Nexus Report,false,0.28,Database cumulative update security fix available.

@@ -1,0 +1,28 @@
+[
+  {
+    "software_name": "OpenSSL",
+    "component": "openssl",
+    "installed_version": "3.0.13",
+    "cve": "CVE-2026-10001",
+    "severity": "high",
+    "cvss_score": 8.1,
+    "fixed_version": "3.0.15",
+    "source_tool": "Mock Snyk",
+    "exploit_available": true,
+    "epss_score": 0.72,
+    "description": "Mock scanner finding for OpenSSL release-risk testing."
+  },
+  {
+    "software_name": "MS Exchange Server 2019",
+    "component": "exchange-server",
+    "installed_version": "CU14",
+    "cve": "CVE-2026-10004",
+    "severity": "critical",
+    "cvss_score": 9.8,
+    "fixed_version": "CU15",
+    "source_tool": "Mock Snyk",
+    "exploit_available": true,
+    "epss_score": 0.9,
+    "description": "Mock exploitable Exchange finding for release blocker testing."
+  }
+]

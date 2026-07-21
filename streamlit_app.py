@@ -16,6 +16,7 @@ from App import workflow_ui
 from App.pages import admin as admin_pages
 from App.pages import qa_validation as qa_validation_page
 from App.pages import security as security_page
+from App.pages import vulnerability_war_room as vulnerability_war_room_page
 from App.pages.support import render_operation_result, render_posture_strip, visible_output_files_for_role
 from App.data_loaders import (
     add_environment_readiness,
@@ -106,7 +107,7 @@ BASE_PAGES = [
     "Reports",
 ]
 WORKFLOW_MONITOR_PAGE = "Workflow Monitor"
-SECURITY_PAGES = ["Vulnerability Assessment", "Cache Analytics"]
+SECURITY_PAGES = ["Vulnerability Assessment", "Vulnerability War Room", "Cache Analytics"]
 CACHE_PAGES = ["Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
@@ -341,6 +342,10 @@ def render_vulnerabilities(vuln_df: pd.DataFrame) -> None:
     security_page.render_vulnerabilities(vuln_df, page_context())
 
 
+def render_vulnerability_war_room() -> None:
+    vulnerability_war_room_page.render_vulnerability_war_room(page_context())
+
+
 def render_reports(current_df: pd.DataFrame, comparison_df: pd.DataFrame, vuln_df: pd.DataFrame) -> None:
     app_pages.render_reports(current_df, comparison_df, vuln_df, page_context())
 
@@ -437,6 +442,8 @@ def main() -> None:
         render_qa_validation(qa_df)
     elif page == "Vulnerability Assessment":
         render_vulnerabilities(vuln_df)
+    elif page == "Vulnerability War Room":
+        render_vulnerability_war_room()
     elif page == WORKFLOW_MONITOR_PAGE:
         if current_role() != ROLE_ADMIN:
             render_access_denied("Admin")

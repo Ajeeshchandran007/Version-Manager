@@ -117,6 +117,12 @@ def _testcase_impact_excel_path(config: dict) -> str:
     return config["output_files"].get("testcase_impact_xlsx", "output/Test_Case_Impact_Assessment.xlsx")
 
 
+def _vulnerability_intelligence_path(config: dict) -> str:
+    output_files = config.get("output_files", {})
+    vulnerability_path = _active_output_path(config, "vulnerability_report_json", _vulnerability_path(config))
+    return str(Path(vulnerability_path).with_name("vulnerability_intelligence.json"))
+
+
 def _file_info(path: str) -> dict[str, Any]:
     resolved = _resolve_path(path)
     exists = os.path.exists(resolved)
@@ -996,6 +1002,43 @@ async def get_package_readiness_summary(ctx: Context) -> str:
         "impact_counts": impact,
         "blocked_count": len(blocked),
         "blocked_packages": list(blocked.keys()),
+    })
+
+
+@mcp.tool()
+async def get_vulnerability_intelligence_summary(ctx: Context) -> str:
+    """Summarizes release-aware vulnerability intelligence generated from scanner evidence."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    path = _vulnerability_intelligence_path(config)
+    intelligence = _safe_load_json(path)
+    if not intelligence:
+        return _json_response({
+            "available": False,
+            "path": _resolve_path(path),
+            "message": "Vulnerability intelligence is not available. Upload or ingest scanner findings first.",
+        })
+    return _json_response({
+        "available": True,
+        "path": _resolve_path(path),
+        "summary": intelligence.get("summary", {}),
+    })
+
+
+@mcp.tool()
+async def get_vulnerability_release_blockers(ctx: Context) -> str:
+    """Returns vulnerabilities that EPRA classified as release blockers."""
+    state = ctx.request_context.lifespan_context
+    config = _refresh_state_config(state)
+    path = _vulnerability_intelligence_path(config)
+    intelligence = _safe_load_json(path)
+    findings = intelligence.get("findings", []) if isinstance(intelligence, dict) else []
+    blockers = [item for item in findings if isinstance(item, dict) and item.get("release_blocker")]
+    return _json_response({
+        "available": bool(intelligence),
+        "path": _resolve_path(path),
+        "blocked_count": len(blockers),
+        "release_blockers": blockers[:25],
     })
 
 

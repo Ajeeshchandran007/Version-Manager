@@ -524,7 +524,22 @@ def _internal_package_prompt(prompt: str) -> bool:
 
 def _vulnerability_requested(prompt: str) -> bool:
     prompt_lower = prompt.lower()
-    return any(term in prompt_lower for term in ("vulnerability", "vulnerabilities", "cve", "security risk", "security assessment", "risk level"))
+    return any(
+        term in prompt_lower
+        for term in (
+            "vulnerability",
+            "vulnerabilities",
+            "cve",
+            "security risk",
+            "security assessment",
+            "risk level",
+            "release blocker",
+            "security blocker",
+            "war room",
+            "risk score",
+            "security signoff",
+        )
+    )
 
 
 def _reports_requested(prompt: str) -> bool:
@@ -778,6 +793,9 @@ def _answer_missing_package_readiness(prompt: str) -> dict[str, str] | None:
 def _answer_vulnerability_from_outputs(prompt: str) -> dict[str, str] | None:
     if not _vulnerability_requested(prompt):
         return None
+    intelligence, intelligence_path = _load_best_output_json("vulnerability_intelligence.json", prompt)
+    if intelligence and isinstance(intelligence.get("findings"), list):
+        return _answer_vulnerability_intelligence(prompt, intelligence, intelligence_path)
     vulnerabilities, source_path = _load_best_output_json("vulnerability_report.json", prompt)
     if not vulnerabilities:
         return None
@@ -816,6 +834,61 @@ def _answer_vulnerability_from_outputs(prompt: str) -> dict[str, str] | None:
     if source_path:
         message += f"\n\nSource: `{source_path}`"
     return {"content": message, "source": "Used MCP tool: Vulnerability Assessment", "widget": ""}
+
+
+def _vulnerability_evidence_note(intelligence: dict[str, Any], source_path: str) -> str:
+    evidence = intelligence.get("evidence_source", {}) if isinstance(intelligence.get("evidence_source"), dict) else {}
+    if not evidence:
+        return f"\n\nEvidence source: **EPRA vulnerability intelligence** | Source file: `{source_path}`" if source_path else ""
+
+    active_source = evidence.get("active_source") or "EPRA vulnerability intelligence"
+    trust_level = evidence.get("trust_level") or "Unknown"
+    fallback_used = "Yes" if evidence.get("fallback_used") else "No"
+    source_file = evidence.get("source_file") or source_path
+
+    note = (
+        f"\n\nEvidence source: **{active_source}** | "
+        f"Trust: **{trust_level}** | "
+        f"Fallback used: **{fallback_used}**"
+    )
+    if source_file:
+        note += f" | Source file: `{source_file}`"
+    return note
+
+
+def _answer_vulnerability_intelligence(prompt: str, intelligence: dict[str, Any], source_path: str) -> dict[str, str]:
+    findings = [item for item in intelligence.get("findings", []) if isinstance(item, dict)]
+    candidates = sorted({str(item.get("software_name")) for item in findings if item.get("software_name")})
+    software = _match_software_name(prompt, candidates)
+    team, release = _context_label_from_output_path(source_path)
+    if software:
+        scoped = [item for item in findings if str(item.get("software_name", "")).lower() == software.lower()]
+        scoped = sorted(scoped, key=lambda item: int(item.get("release_risk_score") or 0), reverse=True)
+        rows = "\n".join(
+            f"- **{item.get('cve') or item.get('finding_id')}**: {item.get('severity', 'UNKNOWN')} | "
+            f"score {item.get('release_risk_score', 0)} | {item.get('blocker_decision', 'Review')} | "
+            f"{item.get('recommended_action', 'Review with Security.')}"
+            for item in scoped[:8]
+        )
+        message = f"Vulnerability intelligence for **{software}** in **{team} / {release}**:\n\n{rows or '- No findings recorded.'}"
+    else:
+        summary = intelligence.get("summary", {}) if isinstance(intelligence.get("summary"), dict) else {}
+        blockers = [item for item in findings if item.get("release_blocker")]
+        message = (
+            f"Release-aware vulnerability intelligence for **{team} / {release}**:\n\n"
+            f"- **Total normalized findings**: {summary.get('total_findings', len(findings))}\n"
+            f"- **Release blockers**: {summary.get('release_blockers', len(blockers))}\n"
+            f"- **Critical findings**: {summary.get('severity_counts', {}).get('CRITICAL', 0)}\n"
+            f"- **High findings**: {summary.get('severity_counts', {}).get('HIGH', 0)}"
+        )
+        if blockers:
+            message += "\n\nTop release blockers:\n" + "\n".join(
+                f"- **{item.get('software_name')}** {item.get('cve') or item.get('finding_id')}: "
+                f"score {item.get('release_risk_score', 0)} - {item.get('recommended_action', 'Review with Security.')}"
+                for item in blockers[:8]
+            )
+    message += _vulnerability_evidence_note(intelligence, source_path)
+    return {"content": message, "source": "Used MCP tool: Vulnerability Intelligence", "widget": ""}
 
 
 def _answer_reports_from_outputs(prompt: str) -> dict[str, str] | None:
