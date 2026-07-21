@@ -49,6 +49,7 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
         f"Fallback used: {'Yes' if evidence_source.get('fallback_used') else 'No'} | "
         f"Source: {evidence_source.get('source_file') or 'Not available'}"
     )
+    st.info("EPRA can auto-discover scanner reports from the release reports folder. Manual CSV/JSON/XLSX upload is only an optional fallback.")
     with st.expander("Release Scanner Report Discovery", expanded=False):
         st.caption(f"EPRA checks for scanner reports under `{release_input_dir / 'reports'}` and `{output_dir / 'reports'}`.")
         release_reports = evidence_source.get("release_reports", []) or []
@@ -79,7 +80,7 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                     st.warning("No supported release scanner report was found.")
             except Exception as exc:
                 st.error(f"Release scanner report was not loaded: {exc}")
-    with st.expander("Upload Scanner Report", expanded=False):
+    with st.expander("Optional Manual Scanner Report Upload", expanded=False):
         st.caption("Upload scanner CSV/JSON/XLSX report, or place reports under the release reports folder for auto-discovery.")
         scan_file = st.file_uploader("Upload Vulnerability Scan Report", type=["json", "csv", "xlsx", "xls"], key="vulnerability_scan_report_upload")
         if st.button("Parse Scan Report", use_container_width=True, disabled=scan_file is None):

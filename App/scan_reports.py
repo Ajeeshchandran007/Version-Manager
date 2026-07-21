@@ -185,7 +185,43 @@ def load_parsed_scan_findings(output_dir: Path) -> list[dict[str, Any]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    return [_repair_scanner_source(item) for item in data if isinstance(item, dict)]
+
+
+def _infer_scanner_source(record: dict[str, Any]) -> str:
+    text = " ".join(
+        str(record.get(key, ""))
+        for key in ("Source File", "Evidence URL", "Description", "Scanner Source")
+    ).lower()
+    if "nexus" in text:
+        return "Nexus IQ"
+    if "snyk" in text:
+        return "Snyk"
+    if "blackduck" in text or "black duck" in text:
+        return "Black Duck"
+    if "trivy" in text:
+        return "Trivy"
+    if "qualys" in text:
+        return "Qualys"
+    if "tenable" in text or "nessus" in text:
+        return "Tenable"
+    if "veracode" in text:
+        return "Veracode"
+    return ""
+
+
+def _repair_scanner_source(record: dict[str, Any]) -> dict[str, Any]:
+    scanner_source = str(record.get("Scanner Source", "")).strip()
+    if scanner_source and scanner_source.lower() not in {"uploaded scan report", "uploaded scanner report"}:
+        return record
+    inferred = _infer_scanner_source(record)
+    if inferred:
+        repaired = dict(record)
+        repaired["Scanner Source"] = inferred
+        return repaired
+    return record
 
 
 def _first(record: dict[str, Any], *keys: str, default: str = "") -> str:
