@@ -157,7 +157,6 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
     else:
         role_workflow_action = lambda: ctx.run_async(ctx.trigger_full_pipeline(category, force_refresh, run_team, run_release))
 
-    workflow_cols = st.columns(3)
     workflow_actions = [
         (
             "Version Scan",
@@ -192,18 +191,29 @@ def render_operations(config: dict[str, Any], ctx: Any) -> None:
             False,
         ),
     ]
-    for col, (section, label, description, spinner, action, primary) in zip(workflow_cols, workflow_actions):
-        with col:
-            st.markdown(f"**{section}**")
-            if st.button(label, type="primary" if primary else "secondary", use_container_width=True, disabled=not release_context_ready):
-                with st.spinner(spinner):
-                    try:
-                        result = action()
-                        ctx.clear_dashboard_cache()
-                        st.session_state["last_operation_result"] = ctx.with_actor(result)
-                    except Exception as exc:
-                        st.session_state["last_operation_result"] = ctx.with_actor({"error": str(exc)})
-            st.caption(description)
+    visible_actions = workflow_actions if not package_mode else workflow_actions[:2]
+    action_container = st.container()
+    with action_container:
+        workflow_cols = st.columns(len(visible_actions))
+        for index, (section, label, description, spinner, action, primary) in enumerate(visible_actions):
+            with workflow_cols[index]:
+                st.markdown(f"**{section}**")
+                clicked = st.button(
+                    label,
+                    type="primary" if primary else "secondary",
+                    use_container_width=True,
+                    disabled=not release_context_ready,
+                    key=f"operations_{section.lower().replace(' ', '_')}_{label.lower().replace(' ', '_')}",
+                )
+                if clicked:
+                    with st.spinner(spinner):
+                        try:
+                            result = action()
+                            ctx.clear_dashboard_cache()
+                            st.session_state["last_operation_result"] = ctx.with_actor(result)
+                        except Exception as exc:
+                            st.session_state["last_operation_result"] = ctx.with_actor({"error": str(exc)})
+                st.caption(description)
 
     st.subheader("Execution Summary")
     ctx.render_operation_result(st.session_state.get("last_operation_result"))
