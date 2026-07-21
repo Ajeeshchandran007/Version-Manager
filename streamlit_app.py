@@ -15,6 +15,7 @@ from App.assistant_chat import ROLE_ASSISTANT_PAGES, render_ai_assistant as rend
 from App import workflow_ui
 from App.pages import admin as admin_pages
 from App.pages import qa_validation as qa_validation_page
+from App.pages import release_readiness_gate as release_readiness_gate_page
 from App.pages import security as security_page
 from App.pages import vulnerability_war_room as vulnerability_war_room_page
 from App.pages.support import render_operation_result, render_posture_strip, visible_output_files_for_role
@@ -109,7 +110,7 @@ BASE_PAGES = [
 WORKFLOW_MONITOR_PAGE = "Workflow Monitor"
 SECURITY_PAGES = ["Vulnerability Assessment", "Vulnerability War Room", "Cache Analytics"]
 CACHE_PAGES = ["Cache Analytics"]
-RELEASE_PAGES = ["Package Readiness"]
+RELEASE_PAGES = ["Package Readiness", "Release Readiness Gate"]
 QA_PAGES = ["QA Validation"]
 ADMIN_PAGES = ["Audit Logs", "Admin User Management", "Settings"]
 
@@ -436,6 +437,8 @@ def main() -> None:
         render_comparison(comparison_df)
     elif page == "Package Readiness":
         render_package_readiness(readiness_df)
+    elif page == "Release Readiness Gate":
+        release_readiness_gate_page.render_release_readiness_gate(page_context())
     elif page == "Compatibility Check":
         render_compatibility_check(compatibility_df)
     elif page == "QA Validation":
