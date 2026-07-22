@@ -108,9 +108,9 @@ BASE_PAGES = [
     "Reports",
 ]
 WORKFLOW_MONITOR_PAGE = "Workflow Monitor"
-SECURITY_PAGES = ["Vulnerability Assessment", "Vulnerability War Room", "Cache Analytics"]
+SECURITY_PAGES = ["Vulnerability Assessment", "Vulnerability Evidence", "Release Readiness Gate", "Cache Analytics"]
 CACHE_PAGES = ["Cache Analytics"]
-RELEASE_PAGES = ["Package Readiness", "Release Readiness Gate"]
+RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
 ADMIN_PAGES = ["Audit Logs", "Admin User Management", "Settings"]
 
@@ -445,7 +445,7 @@ def main() -> None:
         render_qa_validation(qa_df)
     elif page == "Vulnerability Assessment":
         render_vulnerabilities(vuln_df)
-    elif page == "Vulnerability War Room":
+    elif page == "Vulnerability Evidence":
         render_vulnerability_war_room()
     elif page == WORKFLOW_MONITOR_PAGE:
         if current_role() != ROLE_ADMIN:
