@@ -12,8 +12,10 @@ from openai import AsyncOpenAI
 from tavily import TavilyClient
 
 from App.auth import ROLE_ADMIN, ROLE_QA_ENGINEER, ROLE_RELEASE_ENGINEER, current_role, current_user
+from App.pages.release_readiness_gate import _build_gate_rows
 from App.qa_signoff import load_qa_signoff
 from App.workspace import WORKSPACES_DIR, active_config, active_output_path, active_release_line, active_team_name, team_input_software_path
+from Core.dependency_review import load_dependency_reviews
 from Core.ai_governance import apply_final_governance, classify_web_search_prompt
 from Core.assistant_tool_router import ToolRouteDecision, resolve_assistant_tool
 from Core.pdf_reader import PDFReader
@@ -563,6 +565,36 @@ def _reports_requested(prompt: str) -> bool:
     )
 
 
+def _release_decision_requested(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(
+        term in prompt_lower
+        for term in (
+            "is this release ready",
+            "release ready",
+            "ready to release",
+            "can we release",
+            "release decision",
+            "release gate",
+            "release summary",
+            "generate release summary",
+            "what is blocking the release",
+            "blocking the release",
+            "release blockers",
+            "what blocks the release",
+        )
+    )
+
+
+def _release_decision_prompt_mode(prompt: str) -> str:
+    prompt_lower = prompt.lower()
+    if "blocking" in prompt_lower or "blocker" in prompt_lower or "blocks" in prompt_lower:
+        return "blockers"
+    if "summary" in prompt_lower or "generate" in prompt_lower:
+        return "summary"
+    return "readiness"
+
+
 def _match_software_name(prompt: str, candidates: list[str]) -> str:
     prompt_lower = prompt.lower()
     normalized_prompt = _normalize_lookup_text(prompt_lower)
@@ -889,6 +921,134 @@ def _answer_vulnerability_intelligence(prompt: str, intelligence: dict[str, Any]
             )
     message += _vulnerability_evidence_note(intelligence, source_path)
     return {"content": message, "source": "Used MCP tool: Vulnerability Intelligence", "widget": ""}
+
+
+def _answer_release_decision_from_outputs(prompt: str) -> dict[str, str] | None:
+    if not _release_decision_requested(prompt):
+        return None
+    if current_role() == ROLE_QA_ENGINEER:
+        return {
+            "content": (
+                "Release decision is owned by Release Assistant. In QA Assistant, I can summarize QA validation, "
+                "testcase coverage, signoff readiness, and compatibility evidence."
+            ),
+            "source": "Access guardrail: QA role",
+            "widget": "",
+        }
+    output_dir = active_output_path("__placeholder__").parent
+    package_readiness, package_path = _load_best_output_json("package_readiness.json", prompt)
+    qa_validation, qa_path = _load_best_output_json("qa_validation.json", prompt)
+    intelligence, intelligence_path = _load_best_output_json("vulnerability_intelligence.json", prompt)
+    reviews = load_dependency_reviews(output_dir)
+    if not package_readiness:
+        team = active_team_name()
+        release = active_release_line(team)
+        return {
+            "content": (
+                f"I cannot decide release readiness for **{team} / {release}** yet because package readiness output is missing. "
+                "Run the release/package workflow first."
+            ),
+            "source": "Used MCP tool: Release Decision Gate",
+            "widget": "",
+        }
+
+    rows = _build_gate_rows(package_readiness, qa_validation, intelligence, reviews)
+    if not rows:
+        return None
+    mode = _release_decision_prompt_mode(prompt)
+    counts: dict[str, int] = {}
+    for row in rows:
+        decision = str(row.get("Gate Decision") or "Unknown")
+        counts[decision] = counts.get(decision, 0) + 1
+    blocked_rows = [row for row in rows if row.get("Gate Decision") == "Blocked"]
+    review_rows = [row for row in rows if row.get("Gate Decision") in {"Review Required", "QA Validation Required"}]
+    monitor_rows = [row for row in rows if row.get("Gate Decision") == "Proceed With Monitoring"]
+    overall = "Blocked" if blocked_rows else ("Review Required" if review_rows else "Ready")
+    team, release = _context_label_from_output_path(package_path or qa_path or intelligence_path)
+    finding_lookup = {
+        str(item.get("software_name", "")).lower(): item
+        for item in intelligence.get("findings", [])
+        if isinstance(item, dict) and item.get("software_name")
+    } if isinstance(intelligence, dict) else {}
+
+    if mode == "blockers":
+        lines = [f"**{team} / {release} is blocked by {len(blocked_rows)} item(s).**"]
+        if not blocked_rows:
+            lines.append("")
+            lines.append("No release-blocking item is currently identified.")
+        else:
+            lines.append("")
+            lines.append("Blocking items and next action:")
+            for row in blocked_rows[:8]:
+                lines.append(_format_release_blocker_line(row, finding_lookup))
+        return {"content": "\n".join(lines), "source": "Used MCP tool: Release Decision Gate", "widget": ""}
+
+    if mode == "summary":
+        lines = [
+            f"Release summary for **{team} / {release}**:",
+            "",
+            f"- **Overall decision**: {overall}",
+            f"- **Packages in scope**: {len(rows)}",
+            f"- **Blocked**: {len(blocked_rows)}",
+            f"- **Needs review / QA validation**: {len(review_rows)}",
+            f"- **Proceed with monitoring**: {len(monitor_rows)}",
+            f"- **Ready to package**: {counts.get('Ready To Package', 0)}",
+        ]
+        if blocked_rows:
+            lines.append("")
+            lines.append("Top blockers:")
+            for row in blocked_rows[:5]:
+                lines.append(_format_release_blocker_line(row, finding_lookup))
+        elif review_rows:
+            lines.append("")
+            lines.append("Items needing review:")
+            for row in review_rows[:5]:
+                lines.append(_format_release_blocker_line(row, finding_lookup))
+        return {"content": "\n".join(lines), "source": "Used MCP tool: Release Decision Gate", "widget": ""}
+
+    if overall == "Blocked":
+        lines = [
+            f"**No. {team} / {release} is not ready for release.**",
+            f"It is blocked by **{len(blocked_rows)}** item(s).",
+            "",
+            "What must be cleared first:",
+        ]
+        for row in blocked_rows[:6]:
+            lines.append(_format_release_blocker_line(row, finding_lookup))
+    elif overall == "Review Required":
+        lines = [
+            f"**Not yet. {team} / {release} needs review before release.**",
+            f"There are **{len(review_rows)}** review/QA item(s) still open.",
+            "",
+            "Review-needed items:",
+        ]
+        for row in review_rows[:6]:
+            lines.append(_format_release_blocker_line(row, finding_lookup))
+    else:
+        lines = [
+            f"**Yes. {team} / {release} is ready based on current EPRA evidence.**",
+            "No release-blocking package, vulnerability, or QA gate issue is currently identified.",
+        ]
+    lines.append("")
+    lines.append("Evidence used: package readiness, QA validation, vulnerability intelligence, and dependency review status.")
+    return {"content": "\n".join(lines), "source": "Used MCP tool: Release Decision Gate", "widget": ""}
+
+
+def _format_release_blocker_line(row: dict[str, Any], finding_lookup: dict[str, dict[str, Any]]) -> str:
+    software = str(row.get("Software") or "Unknown")
+    finding = finding_lookup.get(software.lower(), {})
+    security_action = finding.get("security_action")
+    package_action = finding.get("release_package_action")
+    if security_action and package_action:
+        action = f"Security: {security_action} Package: {package_action}"
+    elif security_action:
+        action = f"Security: {security_action}"
+    elif package_action:
+        action = f"Package: {package_action}"
+    else:
+        action = str(row.get("Next Action") or "Review and update release evidence.")
+    review_status = str(row.get("Review Status") or "Not Requested")
+    return f"- **{software}**: {row.get('Reason')} **Action:** {action} **Review:** {review_status}."
 
 
 def _answer_reports_from_outputs(prompt: str) -> dict[str, str] | None:
@@ -1226,6 +1386,10 @@ def _tool_first_answer(prompt: str, qa_df: pd.DataFrame) -> dict[str, str] | Non
         user=str(current_user().get("username") or ""),
         output_dir=active_output_path("__placeholder__").parent,
     )
+    release_decision_answer = _answer_release_decision_from_outputs(prompt)
+    if release_decision_answer:
+        return release_decision_answer
+
     semantic_answer = _semantic_tool_answer(prompt, qa_df)
     if semantic_answer:
         return semantic_answer
@@ -1536,9 +1700,11 @@ def _assistant_empty_state_copy(role: str) -> dict[str, Any]:
                 "blockers, security risks, and report status."
             ),
             "suggestions": [
-                "Show release readiness summary",
-                "What packages are blocked?",
-                "What updates need action?",
+                "Is this release ready?",
+                "What is blocking the release?",
+                "Which security issues need action?",
+                "Which packages need review?",
+                "Generate release summary.",
             ],
         }
     return {

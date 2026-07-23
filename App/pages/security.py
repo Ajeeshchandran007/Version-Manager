@@ -17,6 +17,7 @@ from App.scan_reports import (
     save_uploaded_scan_report,
 )
 from App.workspace import active_output_path, active_release_line, active_team_name, team_input_software_path
+from Core.vulnerability_correlator import split_recommended_actions
 
 
 RISK_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE", "UNKNOWN"]
@@ -46,7 +47,7 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
     release_blockers = int(summary.get("release_blockers", 0) or 0)
     overall_decision = "Blocked" if release_blockers else ("Review Required" if highest_risk >= 55 else "Track")
 
-    st.subheader("Executive Decision Summary")
+    st.subheader("Security Release Summary")
     source_cols = st.columns(5)
     source_cols[0].metric("Overall Decision", overall_decision)
     source_cols[1].metric("Release Blockers", release_blockers)
@@ -61,7 +62,7 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
     )
 
     if vulnerability_intelligence:
-        st.subheader("EPRA Release Risk Intelligence")
+        st.subheader("Release Security Blockers")
         risk_cols = st.columns(4)
         risk_cols[0].metric("Normalized Findings", summary.get("total_findings", 0))
         risk_cols[1].metric("Release Blockers", summary.get("release_blockers", 0))
@@ -72,6 +73,21 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
         if not intel_df.empty:
             if "risk_reasons" in intel_df.columns:
                 intel_df["risk_reasons"] = intel_df["risk_reasons"].apply(lambda value: "; ".join(value) if isinstance(value, list) else value)
+            action_rows = intel_df.apply(lambda row: split_recommended_actions(row.to_dict()), axis=1)
+            if "security_action" not in intel_df.columns:
+                intel_df["security_action"] = [item["security_action"] for item in action_rows]
+            else:
+                intel_df["security_action"] = [
+                    value or action_rows.iloc[idx]["security_action"]
+                    for idx, value in enumerate(intel_df["security_action"])
+                ]
+            if "release_package_action" not in intel_df.columns:
+                intel_df["release_package_action"] = [item["release_package_action"] for item in action_rows]
+            else:
+                intel_df["release_package_action"] = [
+                    value or action_rows.iloc[idx]["release_package_action"]
+                    for idx, value in enumerate(intel_df["release_package_action"])
+                ]
             display_cols = [
                 "software_name",
                 "cve",
@@ -81,7 +97,8 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                 "risk_reasons",
                 "package_readiness",
                 "qa_result",
-                "recommended_action",
+                "security_action",
+                "release_package_action",
             ]
             display_df = intel_df[[col for col in display_cols if col in intel_df.columns]].rename(
                 columns={
@@ -93,7 +110,8 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                     "risk_reasons": "Why This Score",
                     "package_readiness": "Package Readiness",
                     "qa_result": "QA Result",
-                    "recommended_action": "Recommended Action",
+                    "security_action": "Security Action",
+                    "release_package_action": "Release / Package Action",
                 }
             )
             st.dataframe(ctx.style_operational_table(display_df), use_container_width=True, hide_index=True)
@@ -114,7 +132,7 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                     risk_score = finding.get("release_risk_score") if matched else "N/A"
                     evidence_status = "Scanner finding mapped" if matched else "No CVE in active scanner evidence"
                     if matched:
-                        next_action = finding.get("recommended_action", "Review vulnerability finding with package owner.")
+                        next_action = finding.get("security_action") or finding.get("recommended_action", "Review vulnerability finding with package owner.")
                     elif blocker:
                         next_action = "Continue package readiness blocker resolution; no scanner CVE is mapped to this package."
                     else:
@@ -127,12 +145,12 @@ def render_vulnerabilities(vuln_df: pd.DataFrame, ctx: Any) -> None:
                             "Risk Score": risk_score,
                             "Package Readiness": record.get("Package Readiness", "Not Assessed"),
                             "Owner": record.get("Owner", "Not Assigned"),
-                            "Package Blocker": blocker or "None",
+                            "Package Blocker": blocker or "No package-side blocker",
                             "Next Action": next_action,
                         }
                     )
                 if coverage_rows:
-                    st.subheader("Release Package Vulnerability Coverage")
+                    st.subheader("Package Security Status")
                     st.caption("Shows release packages mapped against active scanner evidence, so missing CVE evidence is explicit and not confused with a vulnerability finding.")
                     coverage_df = pd.DataFrame(coverage_rows).sort_values(["Release Security Decision", "Software"])
                     st.dataframe(ctx.style_operational_table(coverage_df), use_container_width=True, hide_index=True)

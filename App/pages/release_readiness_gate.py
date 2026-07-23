@@ -5,24 +5,39 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from App.auth import current_user
 from App.scan_reports import load_vulnerability_intelligence
-from App.workspace import active_output_path
+from App.workspace import active_config, active_output_path, active_release_line, active_team_name
+from Core.dependency_review import (
+    REVIEW_STATUSES,
+    apply_review_to_gate_decision,
+    build_review_request,
+    load_dependency_reviews,
+    review_for_software,
+    save_dependency_reviews,
+    send_dependency_review_email,
+)
+from Utils.utils import load_config
 
 
 def render_release_readiness_gate(ctx: Any) -> None:
     ctx.section_title(
-        "Release Readiness Gate",
+        "Release Decision Gate",
         "Final go/no-go view combining package readiness, vulnerability risk, QA status, owners, approvals, and next actions.",
     )
     output_dir = active_output_path("__placeholder__").parent
+    team = active_team_name()
+    release = active_release_line(team)
+    config = active_config(load_config())
     package_readiness = ctx.load_json(str(output_dir / "package_readiness.json"), ctx.file_mtime(output_dir / "package_readiness.json"))
     qa_validation = ctx.load_json(str(output_dir / "qa_validation.json"), ctx.file_mtime(output_dir / "qa_validation.json"))
     intelligence = load_vulnerability_intelligence(output_dir)
+    reviews = load_dependency_reviews(output_dir)
     if not package_readiness:
         st.info("Package readiness data is not available yet. Run version comparison/package readiness first.")
         return
 
-    rows = _build_gate_rows(package_readiness, qa_validation, intelligence)
+    rows = _build_gate_rows(package_readiness, qa_validation, intelligence, reviews)
     gate_df = pd.DataFrame(rows)
     if gate_df.empty:
         st.info("No release packages are available for gate assessment.")
@@ -56,22 +71,23 @@ def render_release_readiness_gate(ctx: Any) -> None:
         "QA Result",
         "Owner",
         "Required Approval",
+        "Review Status",
         "Next Action",
     ]
     st.dataframe(ctx.style_operational_table(gate_df[display_cols]), use_container_width=True, hide_index=True)
 
-    blockers = gate_df[gate_df["Gate Decision"].isin(["Blocked", "QA Validation Required", "Review Required"])]
+    review_needed = gate_df[gate_df["Gate Decision"].isin(["Blocked", "QA Validation Required", "Review Required"])]
     st.subheader("Priority Actions")
-    if blockers.empty:
+    if review_needed.empty:
         st.success("No release-blocking package, vulnerability, or QA gate issue is currently identified.")
     else:
-        for _, row in blockers.head(6).iterrows():
+        for _, row in review_needed.head(6).iterrows():
             st.markdown(
                 f"""
                 <div class="vm-card">
                     <strong>{row['Software']} - {row['Gate Decision']}</strong>
                     <div class="vm-posture-note">
-                        Owner: {row['Owner']} | Required approval: {row['Required Approval']}<br>
+                        Owner: {row['Owner']} | Required approval: {row['Required Approval']} | Review: {row['Review Status']}<br>
                         {row['Reason']}<br>
                         {row['Next Action']}
                     </div>
@@ -79,14 +95,26 @@ def render_release_readiness_gate(ctx: Any) -> None:
                 """,
                 unsafe_allow_html=True,
             )
+    _render_dependency_review_workflow(
+        gate_df=gate_df,
+        package_readiness=package_readiness,
+        intelligence=intelligence,
+        reviews=reviews,
+        output_dir=output_dir,
+        team=team,
+        release=release,
+        config=config,
+    )
 
 
 def _build_gate_rows(
     package_readiness: dict[str, Any],
     qa_validation: dict[str, Any],
     intelligence: dict[str, Any],
+    reviews: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     finding_lookup = _finding_lookup(intelligence)
+    reviews = reviews or {}
     rows: list[dict[str, Any]] = []
     for software, package_record in package_readiness.items():
         if not isinstance(package_record, dict):
@@ -95,6 +123,9 @@ def _build_gate_rows(
         finding = finding_lookup.get(name.lower(), {})
         qa_record = _record_for(name, qa_validation)
         gate = _gate_decision(name, package_record, qa_record, finding)
+        review = review_for_software(reviews, name)
+        if review:
+            gate = apply_review_to_gate_decision(gate, review)
         rows.append(
             {
                 "Software": name,
@@ -106,6 +137,7 @@ def _build_gate_rows(
                 "QA Result": qa_record.get("Test Result") or qa_record.get("Compatibility Status") or "Not Assessed",
                 "Owner": package_record.get("Owner") or finding.get("owner") or "Not Assigned",
                 "Required Approval": gate["approval"],
+                "Review Status": review.get("status", "Not Requested") if review else "Not Requested",
                 "Next Action": gate["action"],
             }
         )
@@ -194,3 +226,124 @@ def _record_for(name: str, source: dict[str, Any]) -> dict[str, Any]:
         if str(key).lower() == lowered and isinstance(value, dict):
             return value
     return {}
+
+
+def _render_dependency_review_workflow(
+    *,
+    gate_df: pd.DataFrame,
+    package_readiness: dict[str, Any],
+    intelligence: dict[str, Any],
+    reviews: dict[str, dict[str, Any]],
+    output_dir: Any,
+    team: str,
+    release: str,
+    config: dict[str, Any],
+) -> None:
+    actionable = gate_df[gate_df["Gate Decision"].isin(["Blocked", "QA Validation Required", "Review Required"])]
+    st.subheader("Dependency Review Workflow")
+    st.caption(
+        "Use this lightweight workflow when a package needs dependency, owner, security, platform, or QA review. "
+        "EPRA sends the request and stores review status as release evidence."
+    )
+    if actionable.empty and not reviews:
+        st.info("No dependency review request is currently required.")
+        return
+
+    finding_lookup = _finding_lookup(intelligence)
+    review_rows = []
+    for _, row in gate_df.iterrows():
+        review = review_for_software(reviews, str(row["Software"]))
+        if review or row["Gate Decision"] in {"Blocked", "QA Validation Required", "Review Required"}:
+            review_rows.append(
+                {
+                    "Software": row["Software"],
+                    "Gate Decision": row["Gate Decision"],
+                    "Responsible Team": review.get("responsible_team", row["Required Approval"]) if review else row["Required Approval"],
+                    "Recipient": review.get("recipient", ""),
+                    "Review Status": review.get("status", "Not Requested") if review else "Not Requested",
+                    "Email Status": review.get("email_status", "Not Sent") if review else "Not Sent",
+                    "Updated At": review.get("updated_at", "") if review else "",
+                }
+            )
+    if review_rows:
+        st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
+
+    options = [str(row["Software"]) for _, row in actionable.iterrows()]
+    if not options:
+        options = sorted({str(review.get("software")) for review in reviews.values() if review.get("software")})
+    if not options:
+        return
+
+    with st.expander("Manage Dependency Review Request", expanded=False):
+        selected = st.selectbox("Software", options, key="dependency_review_software")
+        gate_row = gate_df[gate_df["Software"].astype(str) == selected].iloc[0].to_dict()
+        package_record = _record_for(selected, package_readiness)
+        finding = finding_lookup.get(selected.lower(), {})
+        existing = review_for_software(reviews, selected)
+        requested_by = str(current_user().get("username") or current_user().get("display_name") or "Release Coordinator")
+        draft = existing or build_review_request(
+            team=team,
+            release=release,
+            software=selected,
+            gate_row=gate_row,
+            package_record=package_record,
+            finding=finding,
+            config=config,
+            requested_by=requested_by,
+        )
+        col1, col2 = st.columns(2)
+        col1.text_input("Responsible Team", value=str(draft.get("responsible_team", "")), disabled=True)
+        col2.text_input("Recipient", value=str(draft.get("recipient", "")), disabled=True)
+        st.text_area("Evidence Required", value=str(draft.get("evidence_required", "")), disabled=True)
+
+        selected_status = st.selectbox(
+            "Review Status",
+            REVIEW_STATUSES,
+            index=REVIEW_STATUSES.index(str(draft.get("status", "Not Requested"))) if str(draft.get("status", "Not Requested")) in REVIEW_STATUSES else 0,
+        )
+        note = st.text_area("Response / Evidence Note", value=str(draft.get("response_note", "")))
+        evidence_file = st.file_uploader("Attach Review Evidence", type=["txt", "pdf", "docx", "xlsx", "csv", "json", "png", "jpg", "jpeg"])
+        buttons = st.columns(3)
+        if buttons[0].button("Save Review Status", use_container_width=True):
+            _save_review_update(output_dir, reviews, draft, selected_status, note, evidence_file)
+            st.success("Dependency review status saved.")
+            st.rerun()
+        if buttons[1].button("Send Review Request", use_container_width=True):
+            draft["status"] = "Requested"
+            draft["response_note"] = note
+            sent, error = send_dependency_review_email(draft)
+            draft["email_status"] = "Sent" if sent else "Failed"
+            draft["email_error"] = error
+            _save_review_update(output_dir, reviews, draft, "Requested", note, evidence_file)
+            if sent:
+                st.success(f"Review request sent to {draft.get('recipient')}.")
+            else:
+                st.error(f"Review request was not sent: {error}")
+            st.rerun()
+        if buttons[2].button("Refresh Gate", use_container_width=True):
+            st.rerun()
+
+
+def _save_review_update(
+    output_dir: Any,
+    reviews: dict[str, dict[str, Any]],
+    review: dict[str, Any],
+    status: str,
+    note: str,
+    evidence_file: Any,
+) -> None:
+    from datetime import datetime
+
+    review = dict(review)
+    review["status"] = status
+    review["response_note"] = note
+    review["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    if evidence_file is not None:
+        evidence_dir = output_dir / "dependency_review_evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(ch if ch.isalnum() or ch in {".", "-", "_"} else "_" for ch in evidence_file.name)
+        evidence_path = evidence_dir / f"{review['review_id']}_{safe_name}"
+        evidence_path.write_bytes(evidence_file.getbuffer())
+        review["evidence_file"] = str(evidence_path)
+    reviews[str(review["review_id"])] = review
+    save_dependency_reviews(output_dir, reviews)

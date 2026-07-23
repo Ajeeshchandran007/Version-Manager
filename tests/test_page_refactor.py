@@ -52,7 +52,7 @@ class PageRefactorTests(unittest.TestCase):
             "Operations",
             "Latest Versions",
             "Version Comparison",
-            "Compatibility Check",
+            "Compatibility Review",
             "Reports",
         ]
         common = {

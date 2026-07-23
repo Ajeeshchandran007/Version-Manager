@@ -104,11 +104,11 @@ BASE_PAGES = [
     "Operations",
     "Latest Versions",
     "Version Comparison",
-    "Compatibility Check",
+    "Compatibility Review",
     "Reports",
 ]
 WORKFLOW_MONITOR_PAGE = "Workflow Monitor"
-SECURITY_PAGES = ["Vulnerability Assessment", "Vulnerability Evidence", "Release Readiness Gate", "Cache Analytics"]
+SECURITY_PAGES = ["Vulnerability Assessment", "Vulnerability Evidence", "Release Decision Gate", "Cache Analytics"]
 CACHE_PAGES = ["Cache Analytics"]
 RELEASE_PAGES = ["Package Readiness"]
 QA_PAGES = ["QA Validation"]
@@ -437,9 +437,9 @@ def main() -> None:
         render_comparison(comparison_df)
     elif page == "Package Readiness":
         render_package_readiness(readiness_df)
-    elif page == "Release Readiness Gate":
+    elif page == "Release Decision Gate":
         release_readiness_gate_page.render_release_readiness_gate(page_context())
-    elif page == "Compatibility Check":
+    elif page == "Compatibility Review":
         render_compatibility_check(compatibility_df)
     elif page == "QA Validation":
         render_qa_validation(qa_df)

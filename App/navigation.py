@@ -25,7 +25,7 @@ def pages_for_role(
     if role not in action_roles and "Operations" in pages:
         pages.remove("Operations")
     if role in {ROLE_ADMIN, ROLE_RELEASE_ENGINEER}:
-        insert_at = pages.index("Compatibility Check") if "Compatibility Check" in pages else len(pages)
+        insert_at = pages.index("Compatibility Review") if "Compatibility Review" in pages else len(pages)
         for page in reversed(release_pages):
             pages.insert(insert_at, page)
     if role in {ROLE_ADMIN, ROLE_QA_ENGINEER}:

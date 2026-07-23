@@ -227,6 +227,7 @@ def send_email(
     body: str,
     html_body: str | None = None,
     attachments: list[str | Path] | None = None,
+    recipients: list[str] | None = None,
 ) -> bool:
     global LAST_EMAIL_ERROR
     LAST_EMAIL_ERROR = None
@@ -243,7 +244,8 @@ def send_email(
 
     msg = MIMEMultipart("mixed")
     msg["From"] = smtp_cfg["sender"]
-    msg["To"] = ", ".join(smtp_cfg["recipients"])
+    target_recipients = recipients or smtp_cfg["recipients"]
+    msg["To"] = ", ".join(target_recipients)
     msg["Subject"] = subject
 
     alternative = MIMEMultipart("alternative")
@@ -265,8 +267,8 @@ def send_email(
         with smtplib.SMTP(smtp_cfg["server"], smtp_cfg["port"]) as srv:
             srv.starttls()
             srv.login(smtp_cfg["user"], smtp_cfg["password"])
-            srv.sendmail(smtp_cfg["sender"], smtp_cfg["recipients"], msg.as_string())
-        logger.info(f"Email sent to {smtp_cfg['recipients']}")
+            srv.sendmail(smtp_cfg["sender"], target_recipients, msg.as_string())
+        logger.info(f"Email sent to {target_recipients}")
         return True
     except Exception as e:
         LAST_EMAIL_ERROR = str(e)

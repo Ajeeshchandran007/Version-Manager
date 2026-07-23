@@ -162,7 +162,7 @@ def render_package_readiness(readiness_df: pd.DataFrame, ctx: Any) -> None:
     )
 
 def render_compatibility_check(qa_df: pd.DataFrame, ctx: Any) -> None:
-    ctx.section_title("Compatibility Check", "Operating system, runtime, browser, database, and architecture readiness for deployment validation.")
+    ctx.section_title("Compatibility Review", "Operating system, runtime, browser, database, and architecture readiness for deployment validation.")
     if qa_df.empty:
         st.info("No compatibility data found. Run version comparison first.")
         return

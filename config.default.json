@@ -16,6 +16,15 @@
                                     "${SMTP_RECIPIENT_2}"
                                 ]
              },
+    "review_contacts":  {
+                            "Release Team":  "${SMTP_RECIPIENT_1}",
+                            "Security Team":  "${SMTP_RECIPIENT_1}",
+                            "QA Team":  "${SMTP_RECIPIENT_1}",
+                            "Platform Team":  "${SMTP_RECIPIENT_1}",
+                            "Application Owner":  "${SMTP_RECIPIENT_1}",
+                            "DBA Team":  "${SMTP_RECIPIENT_1}",
+                            "Messaging Team":  "${SMTP_RECIPIENT_1}"
+                        },
     "input_files":  {
                         "software_yml":  "Input/teams/SourceOne/releases/7.2.12/software.yml",
                         "current_version_pdf":  "Input/teams/SourceOne/releases/7.2.12/sample_version.pdf",
